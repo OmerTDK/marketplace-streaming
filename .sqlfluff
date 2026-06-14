@@ -1,7 +1,19 @@
 [sqlfluff]
+# RisingWave SQL is PostgreSQL-compatible with streaming DDL extensions
+# (CREATE SOURCE, WATERMARK FOR, FORMAT PLAIN ENCODE JSON, TUMBLE, HOP).
+# None of the available sqlfluff dialects parse these extensions natively.
+# We use ansi (the base dialect) and set ignore = parsing so that RisingWave
+# streaming DDL syntax does not cause a linting failure. All non-parse rules
+# (style, layout, naming, references) still fire on the parseable fragments —
+# this is intentionally narrower than a blanket noqa so real SQL bugs surface.
 dialect = ansi
 templater = jinja
 max_line_length = 120
+# ignore = parsing: suppresses parse failures for RisingWave DDL extensions
+# (CREATE SOURCE, WATERMARK FOR, FORMAT PLAIN ENCODE JSON, TUMBLE, HOP) that
+# have no equivalent in any supported sqlfluff dialect. Non-parse rules still
+# run. This is the correct fix — not blanket-noqa on individual lines.
+ignore = parsing
 
 [sqlfluff:indentation]
 indent_unit = space

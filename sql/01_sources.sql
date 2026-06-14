@@ -82,7 +82,8 @@ CREATE SOURCE IF NOT EXISTS delivery_update_source (
     event_version      VARCHAR,
     produced_at        TIMESTAMPTZ,
     -- Watermark field: scanned_at (carrier event-time), NOT produced_at.
-    -- Under late_arrival fault, scanned_at can be 2–6 hours behind produced_at.
+    -- scanned_at = event_time + small scan offset (0-300 sim-seconds).
+    -- Under late_arrival fault, event_time is rewound but scanned_at is unchanged.
     -- See ADR-0002 "Watermark Decision" for the full trade-off explanation.
     event_time         TIMESTAMPTZ,
     scanned_at         TIMESTAMPTZ,

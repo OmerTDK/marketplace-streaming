@@ -98,19 +98,69 @@ See `docker-compose.low-mem.yml` for constrained environments (~1.5 GB).
 
 ## Planned phases
 
-| Phase | Deliverables |
-|-------|-------------|
-| **0 — Architecture** (current) | ADRs, docker-compose skeleton, SQL DDL reviewed, event schema documented |
-| **1 — Infrastructure** | Working `docker compose up --build`, all services healthy |
-| **2 — Generator** | Python generator producing synthetic events, fault injection working |
-| **3 — Streaming SQL** | RisingWave sources and MVs live, queryable via psql |
-| **4 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified |
-| **5 — Reconciliation** | Batch recompute asset + reconciliation sensor, divergence/convergence demo |
-| **6 — Demo + polish** | `make fault-demo` script, kill-verification integration test, README with real numbers |
+| Phase | Deliverables | Status |
+|-------|-------------|--------|
+| **0 — Architecture** | ADRs, docker-compose skeleton, SQL DDL reviewed, event schema documented | Merged |
+| **1 — Generator** | Deterministic event generator, injectable sink, fault injection harness, sqlfluff wired | Current |
+| **2 — Infrastructure** | Working `docker compose up --build`, all services healthy, broker integration tests | Next |
+| **3 — Streaming SQL** | RisingWave sources and MVs live, queryable via psql | Planned |
+| **4 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified | Planned |
+| **5 — Reconciliation** | Batch recompute asset + reconciliation sensor, divergence/convergence demo | Planned |
+| **6 — Demo + polish** | `make fault-demo` script, kill-verification integration test, README with real numbers | Planned |
 
 ---
 
-## Quickstart (Phase 1+)
+## Generator (Phase 1)
+
+The generator is fully unit-testable without any containers. All business
+logic is separated from the transport layer via the `Sink` interface.
+
+### Seed determinism
+
+```bash
+# Install (Python 3.12+, uv required)
+uv sync
+uv pip install -e .
+
+# Run the test suite (no containers, no broker)
+make ci                      # ruff + sqlfluff + pytest, 74 tests, ~1s
+
+# Generate 1000 events to an in-memory sink (Python REPL)
+python -c "
+from generator import run_generator
+sink = run_generator(n_events=1000, seed=42)
+print(sink.total_count(), 'events across', list(sink.all_records().keys()))
+"
+```
+
+Within a given Python environment and dependency lockfile (`uv sync --frozen`),
+the same `SEED` value produces an identical byte-for-byte event stream.
+`TestDeterminism::test_full_stream_hash_is_stable` pins the expected SHA-256
+hash of the full stream as a named constant — any cross-session regression
+(Faker version bump, numpy RNG change, new field) causes a clear test failure
+with the old and new hashes printed.
+
+### Fault injection demo (Phase 2+)
+
+The fault harness is already implemented. Once real infrastructure is up
+(`make up`), enable faults by editing `shared/fault_injection.json`:
+
+```json
+{
+  "active": true,
+  "late_arrival_rate": 0.10,
+  "zone_blackout_prefix": "5",
+  "zone_blackout_duration_event_seconds": 7200
+}
+```
+
+The generator hot-reloads this file every 5 seconds (no container restarts).
+All durations are in event-time seconds, so at `TIME_ACCELERATION_FACTOR=3600`
+a 7200-second zone blackout lasts 2 real-seconds — visible in the Dagster UI.
+
+---
+
+## Quickstart (Phase 2+, requires Docker)
 
 ### Prerequisites
 
@@ -147,14 +197,17 @@ make fault-demo
 |-----|---------|
 | [ADR-0001](docs/adr/0001-streaming-engine.md) | RisingWave v1.8.x over Flink — with the upgrade path documented |
 | [ADR-0002](docs/adr/0002-architecture.md) | Full topology: docker-compose, event domain model, generator, fault injection, watermark decision |
+| [ADR-0003](docs/adr/0003-generator-design.md) | Generator determinism (RNG-derived UUIDs), injectable sink (testability vs runtime fidelity), event-time fault parameterization |
 
 ---
 
 ## Results
 
-Phase 0 — no runtime numbers yet. Results will be added in Phase 6 with real
-measurements: event throughput, end-to-end latency at clean-stream and fault
-modes, ClickHouse query times, reconciliation convergence time.
+**Phase 1:** 74 tests, 0 failures, ~1.09s on Python 3.14. No containers.
+ruff + sqlfluff + pytest all pass from `make ci`.
+
+Phase 2+ runtime numbers (throughput, latency, convergence time) will be added
+after the full stack is running.
 
 ---
 
