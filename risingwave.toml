@@ -1,0 +1,7 @@
+# RisingWave standalone configuration — Phase 0/1
+# Required: docker-compose mounts this at /risingwave.toml
+# Phase 0: minimal config for standalone mode.
+# Phase 1+: extend with state backend, checkpointing, and memory settings.
+
+[server]
+listen_addr = "0.0.0.0:4566"

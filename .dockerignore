@@ -6,9 +6,8 @@ __pycache__
 .ruff_cache
 .env
 .DS_Store
-uv.lock
-target/
-dbt_packages/
 logs/
-*.duckdb
 data/local/
+redpanda-data/
+risingwave-data/
+clickhouse-data/

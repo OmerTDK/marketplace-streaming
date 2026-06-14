@@ -17,7 +17,7 @@
 services:
 
   redpanda:
-    image: redpandadata/redpanda:v23.3.x
+    image: redpandadata/redpanda:v23.3.18
     command: >
       redpanda start
         --smp 1 --memory 512M --reserve-memory 0M
@@ -39,7 +39,7 @@ services:
   redpanda-init:
     # One-shot: creates the four event topics. rpk skips existing topics on
     # restart — idempotent by default. 4 partitions / 1 replica for local demo.
-    image: redpandadata/redpanda:v23.3.x
+    image: redpandadata/redpanda:v23.3.18
     depends_on:
       redpanda:
         condition: service_healthy
@@ -51,7 +51,7 @@ services:
         --partitions 4 --replicas 1
 
   risingwave:
-    image: risingwavelabs/risingwave:v1.8.x
+    image: risingwavelabs/risingwave:v1.8.2
     command: standalone --config-path /risingwave.toml
     ports:
       - "4566:4566"   # SQL (psql-compatible: psql -h localhost -p 4566 -U root)

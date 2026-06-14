@@ -5,9 +5,9 @@ __pycache__/
 .ruff_cache/
 .env
 .DS_Store
-uv.lock
-target/
-dbt_packages/
 logs/
-*.duckdb
 data/local/
+# Local volume data (created outside compose named volumes during dev)
+redpanda-data/
+risingwave-data/
+clickhouse-data/

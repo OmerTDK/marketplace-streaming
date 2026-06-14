@@ -1,4 +1,4 @@
-# ADR-0001: Streaming SQL Engine — RisingWave v1.8.x
+# ADR-0001: Streaming SQL Engine — RisingWave v1.8.2
 
 **Date:** 2026-06-14
 **Status:** Accepted
@@ -22,7 +22,7 @@ The primary constraint is a solo-developer, portfolio-demo context:
 
 ## Decision
 
-**Use RisingWave v1.8.x.**
+**Use RisingWave v1.8.2.**
 
 RisingWave wins on three axes that matter at solo-demo scale:
 

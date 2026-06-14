@@ -37,7 +37,7 @@ and RisingWave to 512 MB for constrained environments.
 
 #### Services
 
-**redpanda** — Single-node Redpanda (`redpandadata/redpanda:v23.3.x`), Kafka-compatible
+**redpanda** — Single-node Redpanda (`redpandadata/redpanda:v23.3.18`), Kafka-compatible
 message broker. `--smp 1 --memory 512M`. Health check via `rpk cluster health`.
 Volumes: `redpanda_data`.
 
@@ -45,7 +45,7 @@ Volumes: `redpanda_data`.
 `order_placed`, `shipment_created`, `delivery_update`, `seller_activity`.
 Each topic: 4 partitions, 1 replica. Idempotent on restart (rpk skips existing topics).
 
-**risingwave** — Single-node RisingWave (`risingwavelabs/risingwave:v1.8.x`) in
+**risingwave** — Single-node RisingWave (`risingwavelabs/risingwave:v1.8.2`) in
 standalone mode. Sources and materialized views initialized via SQL files mounted
 at `/docker-entrypoint-initdb.d/`. 1 GB memory cap via `RW_TOTAL_MEMORY_BYTES`.
 Health check via `pg_isready`. Volumes: `risingwave_data`, `./risingwave.toml`.
@@ -201,8 +201,12 @@ avoid silently dropping late events from the fulfillment SLA window.
 6 hours of latency in the late-arrival scenario. This is intentional — the fault
 demo shows this trade-off explicitly.
 
-This is parameterized as `LATE_EVENT_WATERMARK_MINUTES` in `sql/01_sources.sql`.
-Without fault mode (`active: false`), the watermark defaults to 5 minutes.
+The watermark is declared as a literal `INTERVAL '5 minutes'` in
+`sql/01_sources.sql` (standard mode). For fault-injection mode, the constant
+must be changed to `INTERVAL '6 hours'` by editing the SQL directly and
+re-running the CREATE SOURCE statements. A migration script or `make fault-demo`
+step to automate this switch is deferred to Phase 2.
+Without fault mode, the 5-minute literal is the correct value.
 
 This is not solvable by adding infra. It is a fundamental streaming semantics
 judgment: watermark lag = tolerated lateness = maximum late-event wait.

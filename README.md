@@ -57,6 +57,7 @@ flowchart LR
         CH2[seller_health]
         CH3[late_shipment_alert]
         CH4[delivery_zone_status]
+        CH5[batch_recompute_fulfillment_sla]
         CH6[reconciliation_audit]
     end
 
@@ -68,13 +69,14 @@ flowchart LR
     end
 
     G -->|produce| T1 & T2 & T3 & T4
-    T1 & T2 --> MV1 & MV3
+    T1 --> MV1
+    T1 & T2 --> MV3
     T3 --> MV4
     T4 --> MV2 --> MV2b
 
     MV1 & MV2 & MV3 & MV4 --> D1 --> D2
     D2 --> CH1 & CH2 & CH3 & CH4
-    D3 --> CH1
+    D3 --> CH5
     D4 --> CH6
 ```
 
@@ -82,9 +84,9 @@ flowchart LR
 
 | Service | Image | Port | Role |
 |---------|-------|------|------|
-| redpanda | `redpandadata/redpanda:v23.3.x` | 9092 / 9644 | Kafka-compatible broker |
+| redpanda | `redpandadata/redpanda:v23.3.18` | 9092 / 9644 | Kafka-compatible broker |
 | redpanda-init | same | — | One-shot topic creation (4 topics, 4 partitions each) |
-| risingwave | `risingwavelabs/risingwave:v1.8.x` | 4566 | Streaming SQL engine |
+| risingwave | `risingwavelabs/risingwave:v1.8.2` | 4566 | Streaming SQL engine |
 | clickhouse | `clickhouse/clickhouse-server:24.3-alpine` | 8123 / 9000 | Analytical sink |
 | generator | `./generator` | — | Synthetic event producer with fault injection |
 | dagster | `./dagster` | 3000 | Sync sensors and batch reconciliation |

@@ -1,9 +1,10 @@
 -- marketplace-streaming: RisingWave source definitions
 -- Phase 0: DDL skeleton — reviewed for correctness, not executed in CI yet.
 --
--- Watermark constants (change here, not in individual CREATE SOURCE statements):
---   STANDARD_WATERMARK_LAG    = INTERVAL '5 minutes'  (clean-stream default)
---   LATE_EVENT_WATERMARK_LAG  = INTERVAL '6 hours'    (fault-injection mode)
+-- Watermark mode (change the INTERVAL literals in each CREATE SOURCE below):
+--
+--   Standard mode (clean-stream):  INTERVAL '5 minutes'  ← current value
+--   Fault-injection mode:          INTERVAL '6 hours'    ← change for fault demo
 --
 -- The watermark decision is documented in docs/adr/0002-architecture.md
 -- (section "Watermark Decision"). Summary:
@@ -12,11 +13,14 @@
 --     event_time can be 2–6 hours behind produced_at.
 --   - A 5-minute lag is correct for clean-stream operation.
 --   - A 6-hour lag is required to absorb the maximum late-arrival fault.
---   - The demo script (make fault-demo) switches LATE_EVENT_WATERMARK_MINUTES
---     to demonstrate the latency-vs-correctness trade-off explicitly.
+--   - Phase 2 will add a make fault-demo target that automates the switch.
+--     Until then: edit the INTERVAL literals here, drop+recreate sources.
 --
--- Primary keys on sources: ensure idempotent state updates on duplicate-event
--- fault injection. RisingWave uses the PK for internal state dedup.
+-- Note on primary keys: CREATE SOURCE in RisingWave does not accept PRIMARY KEY
+-- constraints (only CREATE TABLE ... WITH (connector='kafka') does). Duplicate
+-- event handling is implemented at the application layer (event_id dedup in the
+-- generator) and at the MV level (idempotent aggregation). Switching sources to
+-- CREATE TABLE for PK-based state dedup is a Phase 1 decision.
 
 CREATE SOURCE IF NOT EXISTS order_placed_source (
     event_id             VARCHAR,

@@ -7,14 +7,24 @@
 
 -- =============================================================================
 -- MV 1: mv_fulfillment_sla_5min
--- 5-minute tumbling window on order_placed_source.
--- Tracks per-seller, per-category SLA compliance within each window.
+-- 5-minute tumbling window, windowed on the ORDER's event_time.
+-- Tracks per-seller, per-category SLA compliance: was the order delivered
+-- (final delivery_update with status='delivered') before sla_deadline_at?
+--
+-- Join strategy: LEFT JOIN delivery_update_source on order_id, keeping only
+-- final delivery events (is_final=TRUE, status='delivered'). Orders with no
+-- matching delivery row are counted as not-yet-delivered (breach pending).
+--
 -- null_field faults on the order source are excluded (freight/payment nulls
 -- don't affect SLA compliance; including them would skew counts).
+--
+-- SLA compliance definition:
+--   delivered_at (delivery scanned_at) <= sla_deadline_at (order-level deadline)
 -- =============================================================================
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_fulfillment_sla_5min AS
 WITH order_events AS (
     SELECT
+        order_id,
         seller_id,
         product_category,
         state_code,
@@ -22,22 +32,32 @@ WITH order_events AS (
         event_time
     FROM order_placed_source
     WHERE is_injected_fault = FALSE OR fault_type IS DISTINCT FROM 'null_field'
+),
+delivery_finals AS (
+    SELECT
+        order_id,
+        scanned_at AS delivered_at
+    FROM delivery_update_source
+    WHERE is_final = TRUE
+      AND status = 'delivered'
 )
 SELECT
     window_start,
     window_end,
-    seller_id,
-    product_category,
-    state_code,
-    COUNT(*)                                              AS orders_placed_count,
-    COUNT(*) FILTER (WHERE event_time <= sla_deadline_at) AS within_sla_count,
-    COUNT(*) FILTER (WHERE event_time > sla_deadline_at)  AS breached_sla_count,
+    o.seller_id,
+    o.product_category,
+    o.state_code,
+    COUNT(*)                                                            AS orders_placed_count,
+    COUNT(d.delivered_at)                                               AS delivered_count,
+    COUNT(*) FILTER (WHERE d.delivered_at <= o.sla_deadline_at)        AS within_sla_count,
+    COUNT(*) FILTER (WHERE d.delivered_at > o.sla_deadline_at)         AS breached_sla_count,
     ROUND(
-        COUNT(*) FILTER (WHERE event_time <= sla_deadline_at)::DECIMAL
-        / NULLIF(COUNT(*), 0) * 100, 2
-    )                                                     AS sla_compliance_pct
-FROM TUMBLE(order_events, event_time, INTERVAL '5 minutes')
-GROUP BY window_start, window_end, seller_id, product_category, state_code;
+        COUNT(*) FILTER (WHERE d.delivered_at <= o.sla_deadline_at)::DECIMAL
+        / NULLIF(COUNT(d.delivered_at), 0) * 100, 2
+    )                                                                   AS sla_compliance_pct
+FROM TUMBLE(order_events, event_time, INTERVAL '5 minutes') AS o
+LEFT JOIN delivery_finals AS d ON o.order_id = d.order_id
+GROUP BY window_start, window_end, o.seller_id, o.product_category, o.state_code;
 
 -- =============================================================================
 -- MV 2: mv_seller_health_1hour

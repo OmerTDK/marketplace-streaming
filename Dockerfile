@@ -4,8 +4,8 @@ WORKDIR /app
 
 ENV UV_LINK_MODE=copy
 
-COPY pyproject.toml ./
-RUN uv sync
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 
 COPY . .
 
