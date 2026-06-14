@@ -1,0 +1,133 @@
+# marketplace-streaming — docker-compose service topology
+#
+# Phase 0: SKELETON ONLY — services declared and documented, not invoked in CI.
+# Phase 1 will add health checks, volume mounts for SQL init files, and
+# the generator/dagster Dockerfiles.
+#
+# Startup order:
+#   redpanda (healthy) → redpanda-init (exits 0)
+#   → risingwave + generator (parallel, both depend on redpanda healthy)
+#   → dagster (depends on risingwave + clickhouse healthy)
+#
+# Memory budget (~2.5 GB total). Docker Desktop must be configured to at
+# least 4 GB. See docker-compose.low-mem.yml for constrained environments.
+#
+# One-command demo (Phase 1+): docker compose up --build
+
+services:
+
+  redpanda:
+    image: redpandadata/redpanda:v23.3.x
+    command: >
+      redpanda start
+        --smp 1 --memory 512M --reserve-memory 0M
+        --overprovisioned --node-id 0
+        --kafka-addr 0.0.0.0:9092
+        --advertise-kafka-addr redpanda:9092
+    ports:
+      - "9092:9092"   # Kafka API
+      - "9644:9644"   # Admin (rpk)
+      - "8081:8081"   # Schema registry
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health", "--api-urls", "localhost:9644"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  redpanda-init:
+    # One-shot: creates the four event topics. rpk skips existing topics on
+    # restart — idempotent by default. 4 partitions / 1 replica for local demo.
+    image: redpandadata/redpanda:v23.3.x
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: on-failure
+    command: >
+      rpk topic create
+        order_placed shipment_created delivery_update seller_activity
+        --brokers redpanda:9092
+        --partitions 4 --replicas 1
+
+  risingwave:
+    image: risingwavelabs/risingwave:v1.8.x
+    command: standalone --config-path /risingwave.toml
+    ports:
+      - "4566:4566"   # SQL (psql-compatible: psql -h localhost -p 4566 -U root)
+      - "5691:5691"   # Meta gRPC (internal)
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "localhost", "-p", "4566", "-U", "root"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - risingwave_data:/var/lib/risingwave
+      - ./risingwave.toml:/risingwave.toml:ro
+      # SQL init files — mounted in execution order (Phase 1: uncomment)
+      # - ./sql/01_sources.sql:/docker-entrypoint-initdb.d/01_sources.sql:ro
+      # - ./sql/02_mvs.sql:/docker-entrypoint-initdb.d/02_mvs.sql:ro
+    environment:
+      RW_TOTAL_MEMORY_BYTES: "1073741824"   # 1 GB cap for CI safety
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    ports:
+      - "8123:8123"   # HTTP API (used by Dagster)
+      - "9000:9000"   # Native protocol
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  generator:
+    build: ./generator
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      REDPANDA_BROKERS: redpanda:9092
+      SEED: "42"
+      EVENTS_PER_SECOND: "50"
+      TIME_ACCELERATION_FACTOR: "3600"    # 1 real-second = 1 sim-hour
+      SIM_START: "2024-01-01T00:00:00Z"
+      FAULT_CONTROL_FILE: /shared/fault_injection.json
+      OLIST_DATA_DIR: ""                  # unset = fully-synthetic fallback
+    volumes:
+      - ./shared:/shared
+    restart: on-failure
+
+  dagster:
+    build: ./dagster
+    ports:
+      - "3000:3000"   # Dagster UI
+    depends_on:
+      risingwave:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      RISINGWAVE_DSN: postgresql://root@risingwave:4566/dev
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+    volumes:
+      - ./dagster:/opt/dagster/app
+    restart: on-failure
+
+volumes:
+  redpanda_data:
+  risingwave_data:
+  clickhouse_data:

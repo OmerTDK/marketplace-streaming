@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.env
+.DS_Store
+uv.lock
+target/
+dbt_packages/
+logs/
+*.duckdb
+data/local/

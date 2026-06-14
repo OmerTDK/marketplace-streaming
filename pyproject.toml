@@ -1,0 +1,19 @@
+[project]
+name = "marketplace-streaming"
+version = "0.1.0"
+description = "Real-time marketplace analytics: Redpanda → RisingWave streaming SQL → ClickHouse, with Dagster batch reconciliation and fault injection demo"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.8", "pre-commit>=4.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "ARG", "PTH", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
