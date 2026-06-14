@@ -101,8 +101,22 @@ class TestDeterminism:
         orders2 = [e["order_id"] for e in sink2.records_for("order_placed")]
         assert orders1 != orders2, "Different seeds should produce different streams"
 
+    # Pinned hash for seed=42, N_SMALL=200, n_sellers=50, n_customers=200,
+    # FaultConfig.inactive(), FixedClock(2024-01-08T09:00:00Z).
+    # Update this constant whenever an intentional generator change is made
+    # (e.g. new field, distribution tweak) — the test message tells you why.
+    EXPECTED_STREAM_HASH: ClassVar[str] = (
+        "da0fd70554d1d18e61cd22d94f22ab2e1efd5657b07b7fc1e35030dba51ceaa4"
+    )
+
     def test_full_stream_hash_is_stable(self) -> None:
-        """The full event stream hash must be identical across runs (bit-for-bit)."""
+        """The full event stream hash must match the pinned expected value.
+
+        Pinning against a known constant (not run1==run2) catches cross-session
+        regressions: Faker version bumps, numpy RNG changes, new fields, or any
+        other mutation that produces a consistently-wrong-but-internally-stable
+        stream would pass a run1==run2 check but fail here.
+        """
         gen, sink = make_generator()
         gen.generate_batch(N_SMALL)
 
@@ -115,22 +129,15 @@ class TestDeterminism:
         )
         stream_hash = hashlib.sha256("\n".join(all_events).encode()).hexdigest()
 
-        # Re-run and check hash matches.
-        gen2, sink2 = make_generator()
-        gen2.generate_batch(N_SMALL)
-        all_events2 = sorted(
-            [
-                json.dumps(event, sort_keys=True, default=str)
-                for topic_events in sink2.all_records().values()
-                for event in topic_events
-            ]
+        assert stream_hash == self.EXPECTED_STREAM_HASH, (
+            f"Stream hash changed: got {stream_hash!r}, "
+            f"expected {self.EXPECTED_STREAM_HASH!r}. "
+            "Update EXPECTED_STREAM_HASH if this change is intentional "
+            "(e.g. new field, distribution tweak, Faker/numpy version bump)."
         )
-        stream_hash2 = hashlib.sha256("\n".join(all_events2).encode()).hexdigest()
-
-        assert stream_hash == stream_hash2, "Stream hash changed between identical runs"
 
     def test_run_generator_convenience_function_deterministic(self) -> None:
-        """run_generator() convenience function is also deterministic."""
+        """run_generator() without a clock arg defaults to FixedClock (deterministic)."""
         sink1 = run_generator(n_events=100, seed=42)
         sink2 = run_generator(n_events=100, seed=42)
         assert isinstance(sink1, InMemorySink)
@@ -138,6 +145,16 @@ class TestDeterminism:
         orders1 = [e["order_id"] for e in sink1.records_for("order_placed")]
         orders2 = [e["order_id"] for e in sink2.records_for("order_placed")]
         assert orders1 == orders2
+
+        # Verify FixedClock is active: all produced_at values must be identical
+        # across events (a wall-clock or SimClock would produce varying values).
+        all_produced_at = {
+            e["produced_at"] for topic_events in sink1.all_records().values() for e in topic_events
+        }
+        assert len(all_produced_at) == 1, (
+            f"Multiple produced_at values found: {all_produced_at}. "
+            "run_generator() must default to FixedClock for determinism."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +523,56 @@ class TestForeignKeyIntegrity:
             )
 
 
+class TestForeignKeyIntegrityWithFaults:
+    """FK integrity must hold for fault-injected duplicate and requeue events.
+
+    The _apply_faults path copies events with dict(event), preserving FK fields.
+    This test class guards against mutations in the duplicate/requeue code path
+    that corrupt FK fields (e.g. regenerating order_id for a duplicate).
+    """
+
+    _FAULT_CONFIG: ClassVar[FaultConfig] = FaultConfig(
+        active=True,
+        duplicate_rate=0.5,
+        requeue_rate=0.5,
+    )
+
+    def test_fault_duplicates_preserve_order_fk(self) -> None:
+        """Fault-injected duplicates must reference the same emitted orders."""
+        gen, sink = make_generator(fault_config=self._FAULT_CONFIG)
+        gen.generate_batch(N_MEDIUM)
+
+        emitted_order_ids = {
+            e["order_id"]
+            for e in sink.records_for("order_placed")
+            if not e["is_injected_fault"] or e.get("fault_type") in (FAULT_DUPLICATE, FAULT_REQUEUE)
+        }
+        # All orders (including duplicates of orders) must appear in the order pool.
+        all_order_ids = {e["order_id"] for e in sink.records_for("order_placed")}
+        for event in sink.records_for("shipment_created"):
+            assert event["order_id"] in all_order_ids, (
+                f"fault-path shipment_created.order_id={event['order_id']} not in emitted order IDs"
+            )
+        _ = emitted_order_ids  # used implicitly via all_order_ids superset
+
+    def test_fault_duplicates_preserve_shipment_fk(self) -> None:
+        """Fault-injected duplicate delivery_updates must reference emitted shipments."""
+        gen, sink = make_generator(fault_config=self._FAULT_CONFIG)
+        gen.generate_batch(N_MEDIUM)
+
+        emitted_shipment_ids = {e["shipment_id"] for e in sink.records_for("shipment_created")}
+        fault_deliveries = [
+            e for e in sink.records_for("delivery_update") if e["is_injected_fault"]
+        ]
+        assert len(fault_deliveries) > 0, (
+            "No fault-injected delivery_update events found — increase duplicate/requeue rate"
+        )
+        for event in fault_deliveries:
+            assert event["shipment_id"] in emitted_shipment_ids, (
+                f"fault delivery_update.shipment_id={event['shipment_id']} not in emitted shipments"
+            )
+
+
 # ---------------------------------------------------------------------------
 # 5. Fault injection tests
 # ---------------------------------------------------------------------------
@@ -667,21 +734,63 @@ class TestFaultInjection:
                     "null_field event should have freight_value_brl=None"
                 )
 
+    def test_null_field_is_noop_on_delivery_update_and_seller_activity(self) -> None:
+        """null_field with default targets silently no-ops on delivery_update and seller_activity.
+
+        The default targets ('freight_value_brl', 'days_to_pickup') are not
+        present on delivery_update or seller_activity events.  The harness skips
+        them — effective null_field rate for those topics is 0%.  This test
+        documents that intentional behavior so it is not mistaken for a bug.
+        """
+        config = FaultConfig(
+            active=True,
+            late_arrival_rate=0.0,
+            duplicate_rate=0.0,
+            null_field_rate=1.0,  # every eligible event gets null_field
+            requeue_rate=0.0,
+        )
+        gen, sink = make_generator(fault_config=config)
+        gen.generate_batch(N_MEDIUM)
+
+        for topic in ("delivery_update", "seller_activity"):
+            null_events = [
+                e for e in sink.records_for(topic) if e.get("fault_type") == FAULT_NULL_FIELD
+            ]
+            assert null_events == [], (
+                f"{len(null_events)} null_field events on {topic} — "
+                "default targets ('freight_value_brl', 'days_to_pickup') are not "
+                f"fields on {topic} events"
+            )
+
     def test_zone_blackout_suppresses_delivery_zone(self) -> None:
-        """zone_blackout should affect delivery_zone during the blackout window."""
+        """Zone blackout must replace zone-5 delivery_update events with '000'.
+
+        FixedClock returns a constant event_time_seconds on every call, so
+        elapsed = current_event_seconds - blackout_started_at_event_seconds = 0
+        on every call.  The blackout (duration=999999) therefore never expires
+        during the batch — every zone-5 delivery_zone must be replaced with '000'.
+        """
         config = FaultConfig(
             active=True,
             zone_blackout_prefix="5",
             zone_blackout_duration_event_seconds=999999,
         )
-        gen, _sink = make_generator(fault_config=config)
+        gen, sink = make_generator(fault_config=config)
         gen.generate_batch(N_MEDIUM)
 
-        # Verify that the delivery_update events with zone starting with "5"
-        # are replaced with "000" (blackout placeholder) for the duration.
-        # We can't assert zero zone-5 events (the blackout may have expired),
-        # but we can assert that the zone_blackout fault type exists in our config.
-        assert config.zone_blackout_prefix == "5"
+        deliveries = sink.records_for("delivery_update")
+        assert len(deliveries) > 0, "No delivery_update events emitted — increase N_MEDIUM"
+
+        zone5_escaped = [e for e in deliveries if e["delivery_zone"].startswith("5")]
+        assert len(zone5_escaped) == 0, (
+            f"{len(zone5_escaped)} delivery_update event(s) escaped zone blackout "
+            f"(delivery_zone still starts with '5')"
+        )
+
+        zone000_placeholders = [e for e in deliveries if e["delivery_zone"] == "000"]
+        assert len(zone000_placeholders) > 0, (
+            "No '000' placeholder events emitted — zone blackout suppression is not firing"
+        )
 
     def test_fault_config_from_dict_roundtrip(self) -> None:
         """FaultConfig.from_dict must correctly parse the default JSON config."""

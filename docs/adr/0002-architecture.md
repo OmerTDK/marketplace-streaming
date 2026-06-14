@@ -153,10 +153,10 @@ No third-party CSV data is committed to this repo (CC BY-NC-SA 4.0 compliance).
 ### Generator Design (`generator/main.py`)
 
 - Python, single synchronous module, no async.
-- `numpy.random.default_rng(SEED)` for all sampling. `Faker(locale='pt_BR', seed=SEED)` for names/cities. Bit-for-bit reproducible from same SEED.
+- `numpy.random.default_rng(SEED)` for all sampling. `Faker(locale='pt_BR').seed_instance(SEED)` for names/cities. Bit-for-bit reproducible from same SEED.
 - `event_time` = simulated clock starting at `SIM_START`, advanced by `TIME_ACCELERATION_FACTOR` (default 3600 = 1 real-second per sim-hour). Enables a 10-minute demo covering weeks of order lifecycle.
 - `produced_at` = real wall-clock UTC. RisingWave watermarking uses `event_time` only.
-- When `OLIST_DATA_DIR` is set: loads Olist CSVs at startup into in-memory DataFrames, samples from actual rows. When unset: fully-synthetic fallback.
+- The generator uses only the documented distribution parameters (lognormal mu/sigma, Pareto shape, category weights). No Olist CSV data is loaded or required.
 
 #### Fault Injection
 
@@ -193,9 +193,13 @@ and waits for convergence. No container restarts required.
 For `delivery_update_source`, the watermark is declared on `scanned_at`
 (carrier event-time), not `produced_at` (Redpanda ingest time).
 
-Under `late_arrival` fault injection, `scanned_at` can be 2–6 hours behind
-`produced_at`. The watermark lag must therefore be set to at least 6 hours to
-avoid silently dropping late events from the fulfillment SLA window.
+Under `late_arrival` fault injection, `event_time` is rewound by up to
+`late_arrival_max_delay_seconds` (default 300 s). `scanned_at` is computed from
+`event_time` before fault injection and is therefore unchanged by `late_arrival`.
+The `zone_blackout` fault is the primary demo path for showing watermark
+divergence on the delivery stream.  If a larger `scanned_at` lag is needed for
+the demo, increase `late_arrival_max_delay_seconds` and set the watermark lag to
+match.
 
 **The trade-off:** a 6-hour watermark means `mv_late_shipment_alert` has up to
 6 hours of latency in the late-arrival scenario. This is intentional — the fault

@@ -193,6 +193,11 @@ class FaultHarness:
         Returns:
             Mutated copy with one field nulled and fault markers set.
         """
+        # null_field_targets are matched against fields present in the event.
+        # Targets missing from the event (e.g. 'freight_value_brl' on a
+        # delivery_update event) are silently skipped.  This means the
+        # effective null_field rate for delivery_update and seller_activity
+        # events is 0% with the default target list.
         targets = [t for t in self._config.null_field_targets if t in event]
         if not targets:
             return event

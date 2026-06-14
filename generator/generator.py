@@ -7,7 +7,7 @@ Produces four event types into injectable sinks:
   seller_activity    → topic 'seller_activity'     (key: seller_id)
 
 All randomness flows through numpy.random.default_rng(seed) and
-Faker(locale='pt_BR', seed=seed). Same seed → identical event stream.
+Faker(locale='pt_BR').seed_instance(seed). Same seed → identical event stream.
 
 Statistical calibration (from ADR-0002, Olist distribution parameters):
   Payment value     lognormal(mu=4.8, sigma=0.9) BRL cents
@@ -568,12 +568,17 @@ def run_generator(
 ) -> InMemorySink | Sink:
     """Convenience function: generate *n_events* and return the sink.
 
+    When *clock* is None the generator defaults to ``FixedClock`` (same fixed
+    timestamp on every event), giving fully deterministic output suitable for
+    tests and reproducible demo snapshots.  Pass a ``SimClock`` for runtime use
+    where advancing event-time is required.
+
     Args:
         n_events: Total events to emit.
         seed: RNG seed for determinism.
         sink: Sink to write to. Defaults to a new InMemorySink.
         fault_config: Optional fault injection config.
-        clock: Optional clock override (for tests: use FixedClock).
+        clock: Optional clock override.  Defaults to FixedClock for determinism.
 
     Returns:
         The sink (same object as *sink* argument, or the created InMemorySink).

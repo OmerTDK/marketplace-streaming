@@ -32,11 +32,22 @@ All randomness flows through `numpy.random.default_rng(seed)`. This includes:
   combine into a 128-bit integer, stamp RFC 4122 version and variant bits.
   This is the key move that makes the stream bit-for-bit reproducible.
 
-`Faker(locale='pt_BR', seed=seed)` provides deterministic city names. The
-locale is `pt_BR` to match the Olist calibration (Brazilian marketplace data).
+`Faker(locale='pt_BR').seed_instance(seed)` provides deterministic city names.
+Note: the `seed` kwarg does not exist on the `Faker` constructor — seeding must
+be done via `.seed_instance(seed)` after construction. The locale is `pt_BR` to
+match the Olist calibration (Brazilian marketplace data).
 
-**Consequence:** same `SEED` → identical event stream on any machine, any
-Python version ≥ 3.12. Tests assert this with a SHA-256 hash comparison.
+**Exception:** seller and customer pool IDs use `uuid.UUID(int=i)` (sequential
+integers 0, 1, 2, … cast to UUID), not the seeded RNG. This is intentional —
+the pool membership is fixed and deterministic by position; only the
+Pareto-shaped selection weights that govern which seller is chosen for each order
+event are drawn from the seeded RNG.
+
+**Consequence:** same `SEED` → identical event stream within a given Python
+environment and dependency lockfile. The SHA-256 hash test
+(`TestDeterminism::test_full_stream_hash_is_stable`) pins the expected value so
+any cross-session regression (Faker version bump, numpy RNG change, new field)
+is caught immediately.
 
 ### 2. Injectable Sink (testability / CI-speed vs runtime fidelity trade-off)
 

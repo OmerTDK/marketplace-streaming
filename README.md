@@ -133,9 +133,12 @@ print(sink.total_count(), 'events across', list(sink.all_records().keys()))
 "
 ```
 
-Same `SEED` value produces an identical byte-for-byte event stream on any
-machine (Python 3.12+, any OS). The SHA-256 hash of the full stream is
-asserted in `tests/test_generator.py::TestDeterminism::test_full_stream_hash_is_stable`.
+Within a given Python environment and dependency lockfile (`uv sync --frozen`),
+the same `SEED` value produces an identical byte-for-byte event stream.
+`TestDeterminism::test_full_stream_hash_is_stable` pins the expected SHA-256
+hash of the full stream as a named constant — any cross-session regression
+(Faker version bump, numpy RNG change, new field) causes a clear test failure
+with the old and new hashes printed.
 
 ### Fault injection demo (Phase 2+)
 
