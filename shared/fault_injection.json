@@ -1,0 +1,11 @@
+{
+  "active": false,
+  "late_arrival_rate": 0.03,
+  "late_arrival_max_delay_seconds": 300,
+  "duplicate_rate": 0.01,
+  "null_field_rate": 0.02,
+  "null_field_targets": ["freight_value_brl", "days_to_pickup"],
+  "requeue_rate": 0.005,
+  "zone_blackout_prefix": null,
+  "zone_blackout_duration_event_seconds": 7200
+}

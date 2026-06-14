@@ -1,0 +1,18 @@
+# Low-memory override for constrained environments.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.low-mem.yml up
+#
+# Reduces total memory budget from ~2.5 GB to ~1.5 GB.
+# Suitable for Docker Desktop configured with 2 GB RAM.
+
+services:
+  redpanda:
+    command: >
+      redpanda start
+        --smp 1 --memory 256M --reserve-memory 0M
+        --overprovisioned --node-id 0
+        --kafka-addr 0.0.0.0:9092
+        --advertise-kafka-addr redpanda:9092
+
+  risingwave:
+    environment:
+      RW_TOTAL_MEMORY_BYTES: "536870912"   # 512 MB

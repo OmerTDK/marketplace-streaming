@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.env
+.DS_Store
+logs/
+data/local/
+# Local volume data (created outside compose named volumes during dev)
+redpanda-data/
+risingwave-data/
+clickhouse-data/

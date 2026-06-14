@@ -1,0 +1,8 @@
+[sqlfluff]
+dialect = ansi
+templater = jinja
+max_line_length = 120
+
+[sqlfluff:indentation]
+indent_unit = space
+tab_space_size = 4
