@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint test ci docker-build docker-test up down fault-demo fault-off
+.PHONY: help install lint lint-sql test ci docker-build docker-test up down fault-demo fault-off
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "%-16s %s\n", $$1, $$2}'
@@ -12,10 +12,13 @@ lint: ## Ruff lint and format check
 	uv run ruff check .
 	uv run ruff format --check .
 
+lint-sql: ## sqlfluff lint — RisingWave/ansi dialect (parse errors suppressed; see .sqlfluff)
+	uv run sqlfluff lint sql/
+
 test: ## Run the test suite
 	uv run pytest -v
 
-ci: lint test ## Run the full CI suite locally
+ci: lint lint-sql test ## Run the full CI suite locally (ruff + sqlfluff + pytest, no containers)
 
 docker-build: ## Build the project image
 	docker build -t marketplace-streaming .
