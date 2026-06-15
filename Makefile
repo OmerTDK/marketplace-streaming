@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint lint-sql test ci integration docker-build docker-test up down fault-demo fault-off
+.PHONY: help install lint lint-sql test ci integration test-reconciliation docker-build docker-test up down fault-demo fault-off
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "%-16s %s\n", $$1, $$2}'
@@ -24,6 +24,11 @@ integration: ## Run integration tests (requires Docker; boots the docker-compose
 	uv sync --group integration
 	uv pip install -e .
 	uv run pytest tests/integration/ -v --timeout=300
+
+test-reconciliation: ## Run only the batch-vs-stream reconciliation integration test (Docker)
+	uv sync --group integration
+	uv pip install -e .
+	uv run pytest tests/integration/test_reconciliation.py -v --timeout=300
 
 docker-build: ## Build the project image
 	docker build -t marketplace-streaming .

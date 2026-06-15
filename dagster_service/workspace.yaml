@@ -1,0 +1,5 @@
+# Dagster workspace: load the reconciliation Definitions (3 assets + 1 check).
+# The RisingWave/ClickHouse connection defaults in reconciliation.resources
+# resolve to the in-network compose hostnames (risingwave:4566, clickhouse:9000).
+load_from:
+  - python_module: reconciliation.assets
