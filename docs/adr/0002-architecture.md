@@ -45,10 +45,15 @@ Volumes: `redpanda_data`.
 `order_placed`, `shipment_created`, `delivery_update`, `seller_activity`.
 Each topic: 4 partitions, 1 replica. Idempotent on restart (rpk skips existing topics).
 
-**risingwave** — Single-node RisingWave (`risingwavelabs/risingwave:v1.8.2`) in
-standalone mode. Sources and materialized views initialized via SQL files mounted
-at `/docker-entrypoint-initdb.d/`. 1 GB memory cap via `RW_TOTAL_MEMORY_BYTES`.
-Health check via `pg_isready`. Volumes: `risingwave_data`, `./risingwave.toml`.
+**risingwave** — Single-node RisingWave (`risingwavelabs/risingwave:v1.8.2`),
+started with the all-in-one `single-node` command (the bare `standalone` command
+panics — "No service is specified to start" — without explicit per-service opts,
+so no `risingwave.toml` config file is used). The image does not auto-run
+`/docker-entrypoint-initdb.d/`; sources and materialized views are applied
+explicitly over the psql wire protocol (the integration test runs
+`sql/01_sources.sql` + `sql/02_mvs.sql` one statement at a time via psycopg2).
+1 GB memory cap via `RW_TOTAL_MEMORY_BYTES`. Health check is a bare TCP probe on
+port 4566 — the image ships no `pg_isready`. Volumes: `risingwave_data`.
 
 **clickhouse** — ClickHouse 24.3 LTS Alpine image. Four `ReplacingMergeTree` sink
 tables plus reconciliation audit table initialized via `./clickhouse/init.sql`.

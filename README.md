@@ -2,7 +2,9 @@
 
 Real-time marketplace analytics: Redpanda → RisingWave streaming SQL → ClickHouse, with Dagster batch reconciliation and fault injection demo.
 
-> Status: Phase 0 — architecture designed, implementation begins in Phase 1.
+> Status: Phase 2 — real topology runs; the integration suite boots the
+> docker-compose stack (Redpanda + RisingWave + ClickHouse) and verifies the
+> end-to-end streaming path, including the watermark kill-test.
 
 ---
 
@@ -101,10 +103,10 @@ See `docker-compose.low-mem.yml` for constrained environments (~1.5 GB).
 | Phase | Deliverables | Status |
 |-------|-------------|--------|
 | **0 — Architecture** | ADRs, docker-compose skeleton, SQL DDL reviewed, event schema documented | Merged |
-| **1 — Generator** | Deterministic event generator, injectable sink, fault injection harness, sqlfluff wired | Current |
-| **2 — Infrastructure** | Working `docker compose up --build`, all services healthy, broker integration tests | Next |
-| **3 — Streaming SQL** | RisingWave sources and MVs live, queryable via psql | Planned |
-| **4 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified | Planned |
+| **1 — Generator** | Deterministic event generator, injectable sink, fault injection harness, sqlfluff wired | Merged |
+| **2 — Infrastructure** | Working compose topology, all services healthy, broker + streaming + sink + watermark integration tests on the compose substrate | Current |
+| **3 — Streaming SQL** | RisingWave sources and MVs live, queryable via psql | Covered by Phase 2 integration suite |
+| **4 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified | Sync logic verified (Phase 2); Dagster daemon deferred |
 | **5 — Reconciliation** | Batch recompute asset + reconciliation sensor, divergence/convergence demo | Planned |
 | **6 — Demo + polish** | `make fault-demo` script, kill-verification integration test, README with real numbers | Planned |
 
@@ -203,11 +205,32 @@ make fault-demo
 
 ## Results
 
-**Phase 1:** 74 tests, 0 failures, ~1.09s on Python 3.14. No containers.
+**Fast lane (no containers):** 77 tests, 0 failures, ~1.7s on Python 3.14.
 ruff + sqlfluff + pytest all pass from `make ci`.
 
-Phase 2+ runtime numbers (throughput, latency, convergence time) will be added
-after the full stack is running.
+**Phase 2 integration (Docker):** 9 tests, 0 failures, ~145s end-to-end via
+`make integration`. The suite uses the repo's own `docker-compose.yml` as the
+test substrate (testcontainers `DockerCompose`), so it exercises the exact
+topology and SQL artifacts a user runs:
+
+- **Broker byte-parity** — `KafkaSink` → Redpanda → consumer round-trip matches
+  the `InMemorySink` reference event-for-event (SEED=42).
+- **Streaming SQL** — `sql/01_sources.sql` + `sql/02_mvs.sql` applied to
+  RisingWave unchanged; `mv_fulfillment_sla_5min` and `mv_delivery_zone_status`
+  populate from produced events; SLA counts are structurally valid.
+- **ClickHouse sink** — windowed MV rows sync into a `ReplacingMergeTree` table
+  and `SELECT ... FINAL` matches the RisingWave source.
+- **Watermark kill-test** — under the 6-hour fault-mode watermark, a 5.5h-late
+  delivery event lands in the correct 5-minute window once the watermark
+  advances, while a 7h-late event (beyond tolerance) is dropped.
+
+Redpanda advertises dual listeners (`internal://redpanda:9092` for RisingWave,
+`external://localhost:19092` for the host test producer), so no broker-address
+substitution is needed — RisingWave's `CREATE SOURCE` uses `redpanda:9092`
+exactly as written.
+
+Throughput / convergence numbers for the full Dagster reconciliation flow will
+be added in Phase 5.
 
 ---
 

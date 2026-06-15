@@ -1,16 +1,17 @@
-"""Integration test: RisingWave MV → ClickHouse FINAL.
+"""Integration test: RisingWave MV → ClickHouse FINAL (compose substrate).
 
-Extends the streaming SQL test with a ClickHouse container. After a windowed MV
-row appears in RisingWave, calls the sync function directly (no Dagster daemon)
-to write to ClickHouse, then asserts:
+Brings up the repo's docker-compose topology (Redpanda + RisingWave +
+ClickHouse), applies the standard sources + MVs to RisingWave unchanged,
+produces events, waits for a windowed MV row, then calls the sync function
+directly (no Dagster daemon) to write to ClickHouse and asserts:
 
   (a) SELECT COUNT(*) FROM fulfillment_sla FINAL >= 1
   (b) The query string used by the test contains 'FINAL' (regression guard)
   (c) within_sla_count in ClickHouse matches the RisingWave MV row
 
-Dagster is NOT containerised here — its daemon cold-starts 90s+ on GitHub
-runners and the daemon health is orthogonal to streaming correctness. The sync
-logic is extracted as a plain function and called directly. See ADR-0004.
+Dagster is NOT containerised here — its daemon cold-starts 90s+ and daemon
+health is orthogonal to streaming correctness. The sync logic is extracted as a
+plain function and called directly. See ADR-0004.
 """
 
 from __future__ import annotations
@@ -21,23 +22,22 @@ from generator.clock import SimClock
 from generator.generator import MarketplaceGenerator
 from generator.sink import KafkaSink
 from tests.integration.conftest import (
-    CLICKHOUSE_IMAGE,
     KAFKA_TOPICS,
-    REDPANDA_IMAGE,
-    RISINGWAVE_IMAGE,
     SQL_DIR,
+    clickhouse_endpoint,
+    compose_topology,
+    connect_risingwave,
     create_topics,
     init_risingwave,
+    kafka_bootstrap,
     poll_until,
+    risingwave_endpoint,
 )
 
 N_EVENTS = 200
 SEED = 42
 SIM_START = "2024-01-08T00:00:00Z"
 TIME_ACCELERATION = 3600.0
-RISINGWAVE_PORT = 4566
-CLICKHOUSE_HTTP_PORT = 8123
-CLICKHOUSE_NATIVE_PORT = 9000
 
 
 # ---------------------------------------------------------------------------
@@ -52,12 +52,12 @@ def sync_fulfillment_sla_to_clickhouse(
 ) -> int:
     """Read all rows from mv_fulfillment_sla_5min and write to ClickHouse.
 
-    This is the same logic that the Dagster clickhouse_sync_asset would run,
-    extracted as a plain function so the integration test can call it directly
-    without booting the Dagster daemon.
+    This is the same logic the Dagster clickhouse_sync_asset would run, extracted
+    as a plain function so the integration test can call it directly without
+    booting the Dagster daemon.
 
-    All queries against ClickHouse ReplacingMergeTree tables use FINAL.
-    The CH query string is returned so the test can assert it contains 'FINAL'.
+    All queries against ClickHouse ReplacingMergeTree tables use FINAL. The CH
+    query string is returned so the test can assert it contains 'FINAL'.
 
     Returns:
         Number of rows written to ClickHouse.
@@ -72,7 +72,6 @@ def sync_fulfillment_sla_to_clickhouse(
     if not rows:
         return 0
 
-    # Write to ClickHouse
     ch_client.execute(
         f"INSERT INTO {clickhouse_table} "
         "(window_start, window_end, seller_id, product_category, state_code, "
@@ -102,78 +101,30 @@ def sync_fulfillment_sla_to_clickhouse(
 
 
 @pytest.fixture(scope="class")
-def redpanda():
-    from testcontainers.kafka import RedpandaContainer
+def sink_env():
+    """Compose topology + RisingWave (standard sources) + ClickHouse client.
 
-    with RedpandaContainer(image=REDPANDA_IMAGE) as container:
-        bootstrap = container.get_bootstrap_server()
-        create_topics(bootstrap, KAFKA_TOPICS, num_partitions=4)
-        yield bootstrap
-
-
-@pytest.fixture(scope="class")
-def risingwave(redpanda: str):
-    import psycopg2
-    from testcontainers.core.container import DockerContainer
-
-    broker = redpanda
-
-    container = (
-        DockerContainer(RISINGWAVE_IMAGE)
-        # RisingWave v1.8 all-in-one mode is `single-node`; bare `standalone` panics
-        # ("No service is specified to start") without explicit per-service opts.
-        .with_command("single-node")
-        .with_exposed_ports(RISINGWAVE_PORT)
-    )
-    container.start()
-
-    mapped_port = int(container.get_exposed_port(RISINGWAVE_PORT))
-    container_host = container.get_container_host_ip()
-
-    def _rw_ready() -> bool:
-        try:
-            c = psycopg2.connect(
-                host=container_host,
-                port=mapped_port,
-                user="root",
-                dbname="dev",
-                connect_timeout=2,
-            )
-            c.close()
-            return True
-        except Exception:
-            return False
-
-    poll_until(_rw_ready, timeout_s=90, interval_s=2)
-
-    sources_sql = (SQL_DIR / "01_sources.sql").read_text(encoding="utf-8")
-    sources_sql = sources_sql.replace("redpanda:9092", broker)
-    assert "redpanda:9092" not in sources_sql
-    mvs_sql = (SQL_DIR / "02_mvs.sql").read_text(encoding="utf-8")
-
-    conn = psycopg2.connect(host=container_host, port=mapped_port, user="root", dbname="dev")
-    conn.autocommit = True
-    init_risingwave(conn, sources_sql, mvs_sql)
-
-    yield conn, container_host, mapped_port
-
-    conn.close()
-    container.stop()
-
-
-@pytest.fixture(scope="class")
-def clickhouse():
-    """Start ClickHouse, create sink tables, yield clickhouse-driver client."""
+    Yields (rw_conn, ch_client, bootstrap).
+    """
     from clickhouse_driver import Client
-    from testcontainers.clickhouse import ClickHouseContainer
 
-    with ClickHouseContainer(image=CLICKHOUSE_IMAGE) as container:
-        ch_host = container.get_container_host_ip()
-        ch_port = int(container.get_exposed_port(9000))
-        client = Client(host=ch_host, port=ch_port)
+    with compose_topology("mktstream_clickhouse") as compose:
+        bootstrap = kafka_bootstrap(compose)
+        create_topics(bootstrap, KAFKA_TOPICS, num_partitions=4)
 
-        # Create the fulfillment_sla table (subset of init.sql)
-        client.execute(
+        rw_host, rw_port = risingwave_endpoint(compose)
+        rw_conn = connect_risingwave(rw_host, rw_port)
+
+        sources_sql = (SQL_DIR / "01_sources.sql").read_text(encoding="utf-8")
+        mvs_sql = (SQL_DIR / "02_mvs.sql").read_text(encoding="utf-8")
+        init_risingwave(rw_conn, sources_sql, mvs_sql)
+
+        ch_host, ch_port = clickhouse_endpoint(compose)
+        ch_client = Client(host=ch_host, port=ch_port)
+
+        # The compose ClickHouse runs clickhouse/init.sql at startup, but create
+        # the table here too so the test is independent of that mount.
+        ch_client.execute(
             """
             CREATE TABLE IF NOT EXISTS fulfillment_sla
             (
@@ -191,7 +142,11 @@ def clickhouse():
             ORDER BY (window_start, seller_id, product_category, state_code)
             """
         )
-        yield client
+
+        try:
+            yield rw_conn, ch_client, bootstrap
+        finally:
+            rw_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -203,20 +158,16 @@ def clickhouse():
 class TestClickhouseSink:
     """Verify MV rows flow from RisingWave into ClickHouse via sync function."""
 
-    def test_rows_written_to_clickhouse(self, redpanda: str, risingwave, clickhouse) -> None:
+    def test_rows_written_to_clickhouse(self, sink_env) -> None:
         """After producing events and syncing, ClickHouse fulfillment_sla FINAL has rows."""
-        rw_conn, _, _ = risingwave
-        ch_client = clickhouse
-        bootstrap = redpanda
+        rw_conn, ch_client, bootstrap = sink_env
 
-        # Produce events
         clock = SimClock(sim_start=SIM_START, acceleration_factor=TIME_ACCELERATION)
         kafka_sink = KafkaSink(bootstrap_servers=bootstrap)
         gen = MarketplaceGenerator(seed=SEED, sink=kafka_sink, clock=clock)
         gen.generate_batch(N_EVENTS)
         kafka_sink.flush()
 
-        # Wait for MV to have rows
         cur = rw_conn.cursor()
 
         def _mv_ready() -> bool:
@@ -224,9 +175,8 @@ class TestClickhouseSink:
             row = cur.fetchone()
             return row is not None and row[0] >= 1
 
-        poll_until(_mv_ready, timeout_s=90, interval_s=2)
+        poll_until(_mv_ready, timeout_s=120, interval_s=2)
 
-        # Sync to ClickHouse
         rows_written = sync_fulfillment_sla_to_clickhouse(rw_conn, ch_client)
         assert rows_written >= 1, "sync function wrote 0 rows"
 
@@ -239,12 +189,9 @@ class TestClickhouseSink:
         count = result[0][0]
         assert count >= 1, f"fulfillment_sla FINAL returned 0 rows after {rows_written} writes"
 
-    def test_within_sla_count_matches_risingwave(
-        self, redpanda: str, risingwave, clickhouse
-    ) -> None:
+    def test_within_sla_count_matches_risingwave(self, sink_env) -> None:
         """within_sla_count in ClickHouse matches RisingWave MV for the same window."""
-        rw_conn, _, _ = risingwave
-        ch_client = clickhouse
+        rw_conn, ch_client, _ = sink_env
 
         rw_cur = rw_conn.cursor()
         rw_cur.execute(
@@ -256,10 +203,9 @@ class TestClickhouseSink:
         assert rw_row is not None, "RisingWave MV is empty"
         rw_window_start, rw_seller_id, rw_within = rw_row
 
-        # Sync again to ensure latest data is in ClickHouse
+        # Sync again to ensure latest data is in ClickHouse.
         sync_fulfillment_sla_to_clickhouse(rw_conn, ch_client)
 
-        # Query ClickHouse with FINAL for the same window + seller
         ch_rows = ch_client.execute(
             "SELECT within_sla_count FROM fulfillment_sla FINAL "
             "WHERE window_start = %(ws)s AND seller_id = %(sid)s",

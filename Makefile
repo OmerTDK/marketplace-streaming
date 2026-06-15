@@ -20,10 +20,10 @@ test: ## Run fast unit tests (no containers, ~5s)
 
 ci: lint lint-sql test ## Run the full fast CI suite locally (ruff + sqlfluff + pytest, no containers)
 
-integration: ## Run integration tests (requires Docker; boots real Redpanda + RisingWave + ClickHouse)
+integration: ## Run integration tests (requires Docker; boots the docker-compose topology)
 	uv sync --group integration
 	uv pip install -e .
-	uv run pytest tests/integration/ -v --timeout=120
+	uv run pytest tests/integration/ -v --timeout=300
 
 docker-build: ## Build the project image
 	docker build -t marketplace-streaming .

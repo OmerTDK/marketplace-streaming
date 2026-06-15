@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!--
+  marketplace-streaming: ClickHouse access override.
+
+  The clickhouse-server alpine image ships a users.d/default-user.xml that
+  restricts the `default` user to loopback (::1 / 127.0.0.1) only. That breaks
+  every non-local client of this single-node demo:
+    - the Dagster service connecting over the compose network (clickhouse:8123)
+    - the integration test connecting from the host over the published port
+
+  This override re-opens the `default` user to any source address. It is scoped
+  to this local single-node demo topology (no secrets in the repo, not exposed
+  beyond the developer machine / CI runner) — see README "no secrets" note.
+-->
+<clickhouse>
+  <users>
+    <default>
+      <networks replace="replace">
+        <ip>::/0</ip>
+        <ip>0.0.0.0/0</ip>
+      </networks>
+    </default>
+  </users>
+</clickhouse>

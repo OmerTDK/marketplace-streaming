@@ -37,17 +37,15 @@ from tests.integration.conftest import (
     BEYOND_TOLERANCE_ZONE,
     KAFKA_TOPICS,
     KILL_TEST_ZONE,
-    REDPANDA_IMAGE,
-    RISINGWAVE_IMAGE,
     SQL_DIR,
+    compose_topology,
+    connect_risingwave,
     create_topics,
     init_risingwave,
+    kafka_bootstrap,
     poll_until,
+    risingwave_endpoint,
 )
-
-RISINGWAVE_PORT = 4566
-RISINGWAVE_USER = "root"
-RISINGWAVE_DB = "dev"
 
 # T0: the business event time for the kill-test delivery scan.
 T0 = datetime(2024, 1, 8, 10, 0, 0, tzinfo=UTC)
@@ -92,72 +90,31 @@ def _make_delivery_update(
 
 
 @pytest.fixture(scope="class")
-def redpanda():
-    from testcontainers.kafka import RedpandaContainer
+def risingwave_kill():
+    """Compose topology + RisingWave initialised with FAULT-MODE (6-hour) sources.
 
-    with RedpandaContainer(image=REDPANDA_IMAGE) as container:
-        bootstrap = container.get_bootstrap_server()
+    The fault-mode sources file (sql/01_sources_fault_mode.sql) widens every
+    watermark to 6 hours, so a 5.5-hour-late delivery_update lands in-window
+    while a 7-hour-late one is dropped. The SQL is applied UNCHANGED — sources
+    point at redpanda:9092, which resolves on the compose network.
+
+    Yields (rw_conn, bootstrap).
+    """
+    with compose_topology("mktstream_killtest") as compose:
+        bootstrap = kafka_bootstrap(compose)
         create_topics(bootstrap, KAFKA_TOPICS, num_partitions=4)
-        yield bootstrap
 
+        rw_host, rw_port = risingwave_endpoint(compose)
+        conn = connect_risingwave(rw_host, rw_port)
 
-@pytest.fixture(scope="class")
-def risingwave_kill(redpanda: str):
-    """Start RisingWave with 6-hour delivery_update watermark for the kill-test."""
-    import psycopg2
-    from testcontainers.core.container import DockerContainer
+        fault_sources_sql = (SQL_DIR / "01_sources_fault_mode.sql").read_text(encoding="utf-8")
+        mvs_sql = (SQL_DIR / "02_mvs.sql").read_text(encoding="utf-8")
+        init_risingwave(conn, fault_sources_sql, mvs_sql)
 
-    broker = redpanda
-
-    container = (
-        DockerContainer(RISINGWAVE_IMAGE)
-        # RisingWave v1.8 all-in-one mode is `single-node`; bare `standalone` panics
-        # ("No service is specified to start") without explicit per-service opts.
-        .with_command("single-node")
-        .with_exposed_ports(RISINGWAVE_PORT)
-    )
-    container.start()
-
-    mapped_port = int(container.get_exposed_port(RISINGWAVE_PORT))
-    container_host = container.get_container_host_ip()
-
-    def _rw_ready() -> bool:
         try:
-            c = psycopg2.connect(
-                host=container_host,
-                port=mapped_port,
-                user=RISINGWAVE_USER,
-                dbname=RISINGWAVE_DB,
-                connect_timeout=2,
-            )
-            c.close()
-            return True
-        except Exception:
-            return False
-
-    poll_until(_rw_ready, timeout_s=90, interval_s=2)
-
-    # Use the FAULT MODE sources file (6-hour watermark on delivery_update_source)
-    # so that our 5.5-hour-late event is within the tolerance window.
-    fault_sources_sql = (SQL_DIR / "01_sources_fault_mode.sql").read_text(encoding="utf-8")
-    fault_sources_sql = fault_sources_sql.replace("redpanda:9092", broker)
-    assert "redpanda:9092" not in fault_sources_sql
-
-    mvs_sql = (SQL_DIR / "02_mvs.sql").read_text(encoding="utf-8")
-
-    conn = psycopg2.connect(
-        host=container_host,
-        port=mapped_port,
-        user=RISINGWAVE_USER,
-        dbname=RISINGWAVE_DB,
-    )
-    conn.autocommit = True
-    init_risingwave(conn, fault_sources_sql, mvs_sql)
-
-    yield conn, container_host, mapped_port, broker
-
-    conn.close()
-    container.stop()
+            yield conn, bootstrap
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +126,9 @@ def risingwave_kill(redpanda: str):
 class TestWatermarkKill:
     """ADR-0002 kill-test: late events land correctly; beyond-tolerance events drop."""
 
-    def test_late_event_lands_in_correct_window(self, redpanda: str, risingwave_kill) -> None:
+    def test_late_event_lands_in_correct_window(self, risingwave_kill) -> None:
         """A delivery_update with scanned_at=T0 and produced_at=T0+5.5h lands in the window."""
-        conn, _, _, bootstrap = risingwave_kill
+        conn, bootstrap = risingwave_kill
 
         # 1. Emit the sentinel event: scanned_at=T0, produced_at=T0+5.5h (beyond normal tolerance)
         sentinel_shipment = str(uuid.uuid4())
@@ -263,9 +220,9 @@ class TestWatermarkKill:
 
         assert ws <= t0_aware < we, f"T0={t0_aware} not within window [{ws}, {we})"
 
-    def test_beyond_tolerance_event_is_dropped(self, redpanda: str, risingwave_kill) -> None:
+    def test_beyond_tolerance_event_is_dropped(self, risingwave_kill) -> None:
         """A delivery_update with scanned_at=T0-7h is correctly dropped (beyond 6h tolerance)."""
-        conn, _, _, bootstrap = risingwave_kill
+        conn, bootstrap = risingwave_kill
 
         # Emit an event with scanned_at=T0-7h — beyond the 6-hour watermark tolerance.
         drop_shipment = str(uuid.uuid4())

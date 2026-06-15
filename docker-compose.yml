@@ -18,16 +18,26 @@ services:
 
   redpanda:
     image: redpandadata/redpanda:v23.3.18
+    # Dual advertised listeners. Two Kafka listeners are required so that BOTH
+    # in-network clients AND host clients connect with a usable broker address:
+    #   internal://redpanda:9092  — resolves on the compose network (RisingWave's
+    #                               CREATE SOURCE bootstrap.server uses this).
+    #   external://localhost:19092 — resolves from the host (the integration test
+    #                               producer/consumer and local `rpk` use this).
+    # A single advertised listener cannot serve both: a client always reconnects
+    # to the *advertised* host returned by metadata, so the advertised name must
+    # be reachable from where the client runs. See ADR-0002 "Dual listeners".
     command: >
       redpanda start
         --smp 1 --memory 512M --reserve-memory 0M
         --overprovisioned --node-id 0
-        --kafka-addr 0.0.0.0:9092
-        --advertise-kafka-addr redpanda:9092
+        --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+        --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
-      - "9092:9092"   # Kafka API
-      - "9644:9644"   # Admin (rpk)
-      - "8081:8081"   # Schema registry
+      - "9092:9092"     # Kafka API (internal listener — in-network only)
+      - "19092:19092"   # Kafka API (external listener — host clients)
+      - "9644:9644"     # Admin (rpk)
+      - "8081:8081"     # Schema registry
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health", "--api-urls", "localhost:9644"]
       interval: 10s
@@ -85,6 +95,10 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Re-open the `default` user beyond loopback so the Dagster service (in-network)
+      # and the integration test (host, published port) can connect. The alpine
+      # image otherwise restricts `default` to 127.0.0.1/::1. See the file header.
+      - ./clickhouse/users.d/access.xml:/etc/clickhouse-server/users.d/access.xml:ro
     ulimits:
       nofile:
         soft: 262144

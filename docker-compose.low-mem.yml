@@ -6,12 +6,16 @@
 
 services:
   redpanda:
+    # `command:` is replaced wholesale by an override (not merged), so the dual
+    # advertised listeners from docker-compose.yml must be repeated here — only
+    # the --memory budget changes. See docker-compose.yml for the listener
+    # rationale (internal redpanda:9092 + external localhost:19092).
     command: >
       redpanda start
         --smp 1 --memory 256M --reserve-memory 0M
         --overprovisioned --node-id 0
-        --kafka-addr 0.0.0.0:9092
-        --advertise-kafka-addr redpanda:9092
+        --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+        --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
 
   risingwave:
     environment:

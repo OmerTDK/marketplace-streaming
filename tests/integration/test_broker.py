@@ -1,11 +1,13 @@
-"""Integration test: generator → Redpanda byte-parity.
+"""Integration test: generator → Redpanda byte-parity (compose substrate).
 
-Spin up a real Redpanda container, produce 50 events via KafkaSink (SEED=42,
-FixedClock), consume them back, and assert that every event_id in Kafka matches
-the corresponding event_id from InMemorySink with the same seed.
+Brings up the repo's docker-compose topology, produces 50 events via KafkaSink
+(SEED=42, FixedClock) to the host-reachable external listener, consumes them
+back, and asserts that every event_id in Kafka matches the corresponding
+event_id from InMemorySink with the same seed.
 
-This proves the KafkaSink serialisation/deserialisation round-trip is
-byte-for-byte equivalent to the InMemorySink reference path.
+This proves the KafkaSink serialise → Redpanda → consume round-trip is
+byte-for-byte equivalent to the InMemorySink reference path, on the same broker
+artifact users run.
 """
 
 from __future__ import annotations
@@ -21,8 +23,9 @@ from generator.generator import MarketplaceGenerator, run_generator
 from generator.sink import InMemorySink, KafkaSink
 from tests.integration.conftest import (
     KAFKA_TOPICS,
-    REDPANDA_IMAGE,
+    compose_topology,
     create_topics,
+    kafka_bootstrap,
     poll_until,
 )
 
@@ -32,25 +35,22 @@ SIM_START = datetime(2024, 1, 8, 9, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture(scope="class")
-def redpanda():
-    """Start a Redpanda container and yield bootstrap server address."""
-    from testcontainers.kafka import RedpandaContainer
-
-    with RedpandaContainer(image=REDPANDA_IMAGE) as container:
-        bootstrap = container.get_bootstrap_server()
-        create_topics(bootstrap, KAFKA_TOPICS, num_partitions=4)
-        yield bootstrap
+def bootstrap():
+    """Compose topology; yield the host-reachable Kafka bootstrap (external listener)."""
+    with compose_topology("mktstream_broker") as compose:
+        bs = kafka_bootstrap(compose)
+        create_topics(bs, KAFKA_TOPICS, num_partitions=4)
+        yield bs
 
 
 @pytest.mark.integration
 class TestBrokerByteParity:
     """Verify KafkaSink → Redpanda → consumer round-trip is byte-for-bit equivalent."""
 
-    def test_all_topics_have_records(self, redpanda: str) -> None:
+    def test_all_topics_have_records(self, bootstrap: str) -> None:
         """All four topics receive events after generator run."""
         from confluent_kafka import Consumer, KafkaError
 
-        bootstrap = redpanda
         clock = FixedClock(event_ts=SIM_START)
         kafka_sink = KafkaSink(bootstrap_servers=bootstrap)
         gen = MarketplaceGenerator(seed=SEED, sink=kafka_sink, clock=clock)
@@ -88,11 +88,9 @@ class TestBrokerByteParity:
         for topic in KAFKA_TOPICS:
             assert len(consumed[topic]) > 0, f"No records found in topic '{topic}'"
 
-    def test_event_ids_match_in_memory_reference(self, redpanda: str) -> None:
+    def test_event_ids_match_in_memory_reference(self, bootstrap: str) -> None:
         """event_ids from Kafka exactly match InMemorySink reference for SEED=42."""
         from confluent_kafka import Consumer, KafkaError
-
-        bootstrap = redpanda
 
         # Reference: generate the same stream into InMemorySink
         clock_ref = FixedClock(event_ts=SIM_START)

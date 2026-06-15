@@ -48,39 +48,54 @@ integration dependency group (`testcontainers[redpanda]`, `psycopg2-binary`,
 `clickhouse-driver`, `confluent-kafka`). These are never installed by `uv sync`
 alone, keeping the fast lane's dependency footprint minimal.
 
-## Why testcontainers, not docker compose
+## Test substrate: the repo's docker-compose.yml (via testcontainers DockerCompose)
 
-Three alternatives were evaluated:
+The integration tests use the repo's own `docker-compose.yml` as their substrate,
+driven from Python by testcontainers' `DockerCompose` helper
+(`from testcontainers.compose import DockerCompose`). `wait=True` runs
+`docker compose up --wait`, blocking on the compose healthchecks before the test
+proceeds, and the `with`/context-managed lifecycle tears the topology down.
 
-### Option A: `docker compose up` in the integration job
+### Why the compose topology, not hand-wired containers
 
-Rejected. `docker compose up` starts containers and then CI must `sleep N` to
-wait for health checks, or poll with an external tool. This introduces:
-- Magic sleep values tuned to CI runner performance (fragile).
-- Port mapping managed by compose (fixed ports — risk of collision on shared runners).
-- No programmatic access to container lifecycle from Python.
+An earlier iteration hand-wired three separate testcontainers
+(`RedpandaContainer`, a raw RisingWave `DockerContainer`, `ClickHouseContainer`)
+and rewrote the source DDL to point RisingWave at the Redpanda *host* port. That
+approach is broken: RisingWave runs inside its own container and cannot reach a
+broker advertised as `localhost:<host-port>`, so `CREATE SOURCE` fails with
+`failed to fetch metadata from kafka`. Each hand-wired container also sits on its
+own network, so there is no name `redpanda:9092` for RisingWave to resolve.
 
-testcontainers solves all three: dynamic port mapping, programmatic readiness
-polling, and `with`-statement lifecycle guarantees.
+The compose topology fixes this at the root: all services share one compose
+network, so `redpanda:9092` resolves for RisingWave and the SQL artifacts in
+`sql/01_sources.sql` / `sql/02_mvs.sql` are applied **unchanged** — no
+broker-address substitution. The test exercises the *same* artifact users run.
 
-### Option B: testcontainers-python (chosen)
+### Dual advertised listeners (the host-producer requirement)
 
-testcontainers-python provides first-class `RedpandaContainer` and
-`ClickHouseContainer` modules. RisingWave uses `GenericContainer` with a bind-
-mounted `risingwave.toml` (same file used by docker-compose.yml — single source
-of truth for configuration).
+The test produces its own events from the host (for determinism and the kill
+test), but RisingWave reads from inside the network. A single advertised Kafka
+listener cannot serve both, because a Kafka client always reconnects to the
+*advertised* address returned in metadata. Redpanda therefore advertises two
+listeners (see `docker-compose.yml`):
 
-Fixture scope is `class` to amortize the 30–90s container startup across all
-test methods in a class. Each test module gets independent containers, so test
-modules are isolated from each other.
+- `internal://redpanda:9092` — RisingWave's `CREATE SOURCE` bootstrap (in-network).
+- `external://localhost:19092` — the host test producer/consumer and local `rpk`.
 
-### Option C: Full testcontainers + docker compose low-mem override
+The host `KafkaSink` produces to `localhost:19092`; RisingWave's `CREATE SOURCE`
+uses `redpanda:9092` unchanged.
 
-The `docker-compose.low-mem.yml` file exists for local demo use on constrained
-machines. For the integration CI job, testcontainers applies equivalent memory
-limits via `.with_env("RW_TOTAL_MEMORY_BYTES", "536870912")` on the RisingWave
-container and the `--memory 256M` flag inside the `RedpandaContainer` image's
-default command. No compose file is needed in CI.
+### Module isolation and fixed ports
+
+Each test module brings up the topology under a distinct `COMPOSE_PROJECT_NAME`
+so the standard-watermark suite and the 6-hour-watermark kill test never share a
+RisingWave instance. Modules run sequentially and the module-scoped fixture tears
+each topology down before the next starts, so the fixed published host ports
+(`4566` / `19092` / `9000`) never clash. The `generator` and `dagster` services
+stay down — the test produces its own events; topics are created from the host.
+
+The `docker-compose.low-mem.yml` override remains for local demo use on
+constrained machines; it is not used by the integration job.
 
 ## Why Dagster is not containerised in Phase 2
 

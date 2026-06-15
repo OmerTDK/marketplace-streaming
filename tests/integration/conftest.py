@@ -1,18 +1,32 @@
-"""Shared utilities for integration tests.
+"""Shared utilities and fixtures for integration tests.
 
 All integration tests are marked with @pytest.mark.integration so the fast
 CI lane can exclude them with `pytest -m "not integration"`.
 
-Container fixtures use scope="class" to amortize the 30s+ startup cost across
-all test methods in a class. Each test class gets fresh containers.
+Substrate: the repo's own docker-compose.yml is the test substrate (via
+testcontainers' DockerCompose). The compose network makes `redpanda:9092`
+resolve for RisingWave, so the SQL artifacts users run (sql/01_sources.sql,
+sql/02_mvs.sql) are applied UNCHANGED — no broker-address substitution.
 
-The poll_until helper enforces the polling-not-sleeping discipline: never call
-time.sleep() directly outside this function.
+Redpanda advertises two listeners (see docker-compose.yml):
+  - internal://redpanda:9092  → used by RisingWave's CREATE SOURCE (in-network)
+  - external://localhost:19092 → used by the host test producer/consumer
+
+Each test module gets its own compose topology under a distinct project name
+(COMPOSE_PROJECT_NAME) so the standard-watermark suite and the 6-hour-watermark
+kill-test never share a RisingWave instance. Modules run sequentially and the
+module-scoped fixture tears each topology down before the next starts, so the
+fixed published host ports (4566 / 19092 / 9000) never clash.
+
+The poll_until helper enforces the polling-not-sleeping discipline.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -33,6 +47,24 @@ CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:24.3-alpine"
 
 # Topics matching the four event sources.
 KAFKA_TOPICS = ["order_placed", "shipment_created", "delivery_update", "seller_activity"]
+
+# Compose service names (must match docker-compose.yml).
+SERVICE_REDPANDA = "redpanda"
+SERVICE_RISINGWAVE = "risingwave"
+SERVICE_CLICKHOUSE = "clickhouse"
+
+# Published host ports (the compose `ports:` mappings publish these unchanged).
+REDPANDA_EXTERNAL_PORT = 19092  # external listener — host producer/consumer
+RISINGWAVE_PORT = 4566
+CLICKHOUSE_NATIVE_PORT = 9000
+
+RISINGWAVE_USER = "root"
+RISINGWAVE_DB = "dev"
+
+# Services the integration suite needs healthy. The `generator` and `dagster`
+# services stay DOWN — the test produces its own events for determinism and the
+# kill-test. `redpanda-init` is skipped too; topics are created from the host.
+COMPOSE_SERVICES = [SERVICE_REDPANDA, SERVICE_RISINGWAVE, SERVICE_CLICKHOUSE]
 
 
 def poll_until(fn, timeout_s: float, interval_s: float = 2.0):
@@ -62,7 +94,7 @@ def create_topics(bootstrap_servers: str, topics: list[str], num_partitions: int
     """Create Kafka topics via confluent-kafka AdminClient (idempotent).
 
     Args:
-        bootstrap_servers: Broker address (host:port).
+        bootstrap_servers: Broker address (host:port) reachable from the host.
         topics: List of topic names to create.
         num_partitions: Number of partitions per topic.
     """
@@ -86,6 +118,9 @@ def init_risingwave(conn, sources_sql: str, mvs_sql: str) -> None:
     Uses autocommit=True and executes one statement at a time — RisingWave's
     psql wire protocol does not guarantee multi-statement string support.
 
+    The SQL is applied UNCHANGED: sources point at `redpanda:9092`, which
+    resolves on the compose network. No broker-address substitution.
+
     Args:
         conn: psycopg2 connection with autocommit=True.
         sources_sql: Content of a sources SQL file (01_sources.sql or fault variant).
@@ -97,24 +132,121 @@ def init_risingwave(conn, sources_sql: str, mvs_sql: str) -> None:
 
 
 def _split_statements(sql: str) -> list[str]:
-    """Split SQL file content into individual executable statements."""
+    """Split SQL file content into individual executable statements.
+
+    Comments are stripped FIRST, then the text is split on ';'. Order matters:
+    a '--' comment line may itself contain a ';' (e.g. "...there; watermark..."),
+    so splitting before stripping would tear a comment into a bogus statement.
+    """
+    # 1. Drop full-line '--' comments (the only comment style used in these files).
+    no_comments = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
+    # 2. Split into statements on the terminator.
     statements = []
-    for raw in sql.split(";"):
-        # Strip comment lines and blank lines.
-        lines = [line for line in raw.splitlines() if not line.strip().startswith("--")]
-        clean = "\n".join(lines).strip()
+    for raw in no_comments.split(";"):
+        clean = raw.strip()
         if clean:
             statements.append(clean)
     return statements
 
 
 # ---------------------------------------------------------------------------
-# Image pre-pull — testcontainers' raw DockerContainer.start() does not reliably
-# pull a large absent image (RisingWave ~1.5 GB) before `create`, surfacing as
-# docker.errors.ImageNotFound on a cold Docker cache (local first run AND fresh
-# CI runners). The first-class Redpanda/ClickHouse modules pull themselves; the
-# raw RisingWave container does not. Pull all three explicitly, once per session,
-# so every fixture starts from a warm cache.
+# Compose topology fixture
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def compose_topology(project_name: str) -> Iterator:
+    """Bring up the repo's docker-compose.yml topology (selected services only).
+
+    Uses a distinct COMPOSE_PROJECT_NAME so independent test modules never share
+    a RisingWave instance or collide on container names. `wait=True` blocks on
+    the compose healthchecks (redpanda rpk cluster health, risingwave TCP probe,
+    clickhouse SELECT 1) before yielding.
+
+    The ~1.5 GB RisingWave image is pulled by the session-scoped pre-pull fixture
+    before this runs, so compose `up` starts from a warm image cache.
+
+    Yields:
+        The live DockerCompose instance.
+    """
+    from testcontainers.compose import DockerCompose
+
+    prev = os.environ.get("COMPOSE_PROJECT_NAME")
+    os.environ["COMPOSE_PROJECT_NAME"] = project_name
+    compose = DockerCompose(
+        context=str(REPO_ROOT),
+        compose_file_name="docker-compose.yml",
+        services=COMPOSE_SERVICES,
+        pull=False,  # images pre-pulled by _prepull_container_images
+        build=False,
+        wait=True,  # block on healthchecks (docker compose up --wait)
+        keep_volumes=False,
+    )
+    try:
+        compose.start()
+        yield compose
+    finally:
+        with contextlib.suppress(Exception):
+            compose.stop()
+        if prev is None:
+            os.environ.pop("COMPOSE_PROJECT_NAME", None)
+        else:
+            os.environ["COMPOSE_PROJECT_NAME"] = prev
+
+
+def kafka_bootstrap(compose) -> str:
+    """Host-reachable Kafka bootstrap (external listener)."""
+    host = compose.get_service_host(SERVICE_REDPANDA, REDPANDA_EXTERNAL_PORT)
+    port = compose.get_service_port(SERVICE_REDPANDA, REDPANDA_EXTERNAL_PORT)
+    return f"{host}:{port}"
+
+
+def risingwave_endpoint(compose) -> tuple[str, int]:
+    """Host-reachable RisingWave (host, port)."""
+    host = compose.get_service_host(SERVICE_RISINGWAVE, RISINGWAVE_PORT)
+    port = int(compose.get_service_port(SERVICE_RISINGWAVE, RISINGWAVE_PORT))
+    return host, port
+
+
+def clickhouse_endpoint(compose) -> tuple[str, int]:
+    """Host-reachable ClickHouse native protocol (host, port)."""
+    host = compose.get_service_host(SERVICE_CLICKHOUSE, CLICKHOUSE_NATIVE_PORT)
+    port = int(compose.get_service_port(SERVICE_CLICKHOUSE, CLICKHOUSE_NATIVE_PORT))
+    return host, port
+
+
+def connect_risingwave(host: str, port: int):
+    """Open an autocommit psycopg2 connection to RisingWave, polling until ready.
+
+    The compose healthcheck is a bare TCP probe on 4566; RisingWave may accept
+    TCP before the SQL frontend is fully ready, so poll on a real connection.
+    """
+    import psycopg2
+
+    def _ready():
+        try:
+            c = psycopg2.connect(
+                host=host,
+                port=port,
+                user=RISINGWAVE_USER,
+                dbname=RISINGWAVE_DB,
+                connect_timeout=3,
+            )
+            c.close()
+            return True
+        except Exception:
+            return False
+
+    poll_until(_ready, timeout_s=90, interval_s=2)
+    conn = psycopg2.connect(host=host, port=port, user=RISINGWAVE_USER, dbname=RISINGWAVE_DB)
+    conn.autocommit = True
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Image pre-pull — compose `up` does not pull when pull=False, and the
+# RisingWave image is ~1.5 GB. Pull all three once per session so every
+# topology starts from a warm cache (local first run AND fresh CI runners).
 # ---------------------------------------------------------------------------
 
 
