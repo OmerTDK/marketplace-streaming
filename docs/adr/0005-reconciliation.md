@@ -57,7 +57,7 @@ The Dagster `@asset` bodies in `reconciliation/assets.py` call those functions.
 This is the ADR-0004 lesson generalised: extract the logic from the asset so it
 is testable without the orchestrator. The fast CI lane unit-tests the recompute
 math and the diff with **zero containers** (`tests/test_reconciliation_logic.py`,
-24 tests). `dagster` is an integration-only dependency; the fast lane never
+26 tests). `dagster` is an integration-only dependency; the fast lane never
 imports it.
 
 ### Mirroring the MV semantics: the LEFT JOIN fan-out
@@ -104,6 +104,22 @@ Driven from `SEED=42`, classified by `reconcile`:
 
 `reconcile` returns the diverged keys, so scenario 3 is a re-check fed scenario
 2's output — the lifecycle round-trips cleanly.
+
+**Scope note on the `converged` status in the running asset.**
+`reconciliation_audit_asset` currently calls `reconcile(...)` **without**
+`previously_diverged_keys`, so the `converged` status is produced by the
+unit-tested logic path (above) but **not** by the live asset run — the audit
+table the asset writes only ever holds `within_tolerance` and `diverged` rows.
+Wiring the asset to feed prior diverged keys back into the next run requires the
+prior keys to round-trip through the `reconciliation_audit` table, which today
+stores only `(window_start, seller_id)` and **not** `product_category` /
+`state_code`. Persisting the truncated 2-tuple and re-keying on it would
+re-introduce the multi-category false-`converged` bug that the 4-tuple
+`diverged_keys` fix closes. Closing this gap correctly therefore means widening
+the `reconciliation_audit` schema to carry the full window key first; it is
+deliberately deferred and tracked as a follow-up rather than shipped half-done.
+The `reconciliation_check` kill-switch is unaffected — it inspects `abs_delta`
+via `is_clean`, never `status`.
 
 ### In-process Dagster testing (no daemon)
 

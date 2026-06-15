@@ -33,6 +33,11 @@ integration = [
     # reconciliation assets in-process against the live compose substrate. The
     # fast lane never imports dagster (it tests reconciliation.logic directly).
     "dagster>=1.9,<2",
+    # dagster-webserver is required by the `dagster dev` CLI the dagster_service
+    # Dockerfile runs (it serves the UI on :3000). Without it, `dagster dev`
+    # exits 2 with "The dagster-webserver Python package must be installed".
+    # Pinned to the same major as dagster so the two stay in lockstep.
+    "dagster-webserver>=1.9,<2",
     "pytest>=8.0",
     "pytest-timeout>=2.3",
 ]

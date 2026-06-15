@@ -43,8 +43,9 @@ def read_orders_from_risingwave(rw_conn) -> list[dict]:
 
     Reads the durable event log (the Kafka-backed source), NOT the streaming MV.
     This is the independent input the batch path recomputes from. Returns every
-    order including null_field faults; the batch logic filters them, mirroring
-    the MV's WHERE clause, so the filter lives in exactly one place.
+    order including null_field faults plus the is_injected_fault flag; the batch
+    logic filters on BOTH axes (is_injected_fault AND fault_type), mirroring the
+    MV's exact WHERE clause, so the filter lives in exactly one place.
 
     Args:
         rw_conn: psycopg2 connection to RisingWave (autocommit).
@@ -56,7 +57,7 @@ def read_orders_from_risingwave(rw_conn) -> list[dict]:
     cur = rw_conn.cursor()
     cur.execute(
         "SELECT order_id, seller_id, product_category, state_code, "
-        "event_time, sla_deadline_at, fault_type "
+        "event_time, sla_deadline_at, is_injected_fault, fault_type "
         "FROM order_placed_source"
     )
     return [
@@ -67,7 +68,8 @@ def read_orders_from_risingwave(rw_conn) -> list[dict]:
             "state_code": row[3],
             "event_time": row[4],
             "sla_deadline_at": row[5],
-            "fault_type": row[6],
+            "is_injected_fault": row[6],
+            "fault_type": row[7],
         }
         for row in cur.fetchall()
     ]

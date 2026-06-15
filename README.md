@@ -113,6 +113,13 @@ See `docker-compose.low-mem.yml` for constrained environments (~1.5 GB).
 | **5 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified | Verified (Phase 2 sync + Phase 3 asset) |
 | **6 — Demo + polish** | `make fault-demo` script, kill-verification integration test, README with real numbers | In progress |
 
+> **Phase numbering note.** This table reflects the as-built ordering (the
+> reconciliation layer was pulled forward ahead of the streaming-SQL/sink
+> hardening). The original plan in `docs/brief.md` and the older ADRs
+> (notably ADR-0002) use the pre-renumbering order — Streaming SQL = Phase 3,
+> ClickHouse sink = Phase 4, Reconciliation = Phase 5. Their technical content
+> is unchanged; only the phase labels differ from this table.
+
 ---
 
 ## Generator (Phase 1)

@@ -47,7 +47,14 @@ def _order(
     seller_id: str = SELLER,
     category: str = CATEGORY,
     state: str = STATE,
+    is_injected_fault: bool | None = None,
 ) -> dict:
+    # The generator sets is_injected_fault and fault_type atomically
+    # (generator/fault_injection.py). Default to that coupling: a fault_type
+    # implies an injected fault unless a test explicitly decouples them to
+    # exercise the MV's two-axis WHERE clause.
+    if is_injected_fault is None:
+        is_injected_fault = fault_type is not None
     return {
         "order_id": order_id,
         "seller_id": seller_id,
@@ -55,6 +62,7 @@ def _order(
         "state_code": state,
         "event_time": event_time,
         "sla_deadline_at": sla_deadline_at,
+        "is_injected_fault": is_injected_fault,
         "fault_type": fault_type,
     }
 
@@ -154,6 +162,34 @@ class TestBatchRecompute:
         rows = batch_recompute_fulfillment_sla(orders, deliveries)
 
         assert len(rows) == 1
+        assert rows[0]["orders_placed_count"] == 1
+        assert rows[0]["within_sla_count"] == 1
+
+    def test_non_injected_null_field_order_is_included(self) -> None:
+        """A null_field fault_type WITHOUT is_injected_fault is KEPT (MV parity).
+
+        The MV WHERE clause excludes a row only when
+        ``is_injected_fault = FALSE OR fault_type IS DISTINCT FROM 'null_field'``
+        is FALSE — i.e. only an INJECTED null_field. A row carrying
+        fault_type='null_field' but is_injected_fault=False is included by the
+        MV, so the batch must include it too or it would report a false
+        divergence (streaming count 1 higher than batch). The old fault_type-only
+        filter wrongly excluded this row.
+        """
+        orders = [
+            _order(
+                "o1",
+                W0 + timedelta(seconds=10),
+                W0 + timedelta(hours=96),
+                fault_type="null_field",
+                is_injected_fault=False,
+            ),
+        ]
+        deliveries = [_delivery("o1", scanned_at=W0 + timedelta(hours=1))]
+
+        rows = batch_recompute_fulfillment_sla(orders, deliveries)
+
+        assert len(rows) == 1, "non-injected null_field order must be included (MV parity)"
         assert rows[0]["orders_placed_count"] == 1
         assert rows[0]["within_sla_count"] == 1
 
@@ -311,8 +347,9 @@ class TestReconcile:
     def test_previously_diverged_key_now_agreeing_is_converged(self) -> None:
         streaming = [_sla_row(W0, within=5)]
         batch = [_sla_row(W0, within=5)]
-        # previously_diverged_keys is naive-UTC — the same form diverged_keys emits.
-        prior = frozenset({(W0_NAIVE, SELLER)})
+        # previously_diverged_keys is the FULL 4-tuple window key, naive-UTC —
+        # the same form diverged_keys emits.
+        prior = frozenset({(W0_NAIVE, SELLER, CATEGORY, STATE)})
 
         audit = reconcile(streaming, batch, previously_diverged_keys=prior)
 
@@ -326,7 +363,45 @@ class TestReconcile:
         audit = reconcile(streaming, batch)
 
         keys = diverged_keys(audit)
-        assert keys == frozenset({(W0_NAIVE + timedelta(minutes=5), SELLER)})
+        assert keys == frozenset({(W0_NAIVE + timedelta(minutes=5), SELLER, CATEGORY, STATE)})
+
+    def test_diverged_one_category_does_not_converge_a_clean_sibling_category(self) -> None:
+        """A clean category/state must NOT be mislabeled `converged`.
+
+        Same seller, same window_start, two categories: one diverged before, the
+        other never diverged. On the next pass with both clean, the previously-
+        diverged category is `converged`, but the sibling that never diverged must
+        stay `within_tolerance`. A truncated (window_start, seller_id) key would
+        wrongly flag BOTH as converged — this is the multi-category regression.
+        """
+        cat_a, cat_b = "cats", "dogs"
+        state_a, state_b = "CA", "NY"
+
+        def _row(within: int, category: str, state: str) -> dict:
+            row = _sla_row(W0, within=within, seller=SELLER)
+            row["product_category"] = category
+            row["state_code"] = state
+            return row
+
+        # Pass 1: cat_a/state_a diverges; cat_b/state_b agrees (never diverged).
+        first = reconcile(
+            [_row(5, cat_a, state_a), _row(3, cat_b, state_b)],
+            [_row(8, cat_a, state_a), _row(3, cat_b, state_b)],
+        )
+        prior = diverged_keys(first)
+        assert prior == frozenset({(W0_NAIVE, SELLER, cat_a, state_a)})
+
+        # Pass 2: both agree now. Only cat_a/state_a should be `converged`.
+        second = reconcile(
+            [_row(8, cat_a, state_a), _row(3, cat_b, state_b)],
+            [_row(8, cat_a, state_a), _row(3, cat_b, state_b)],
+            previously_diverged_keys=prior,
+        )
+        by_cat = {row.product_category: row.status for row in second}
+        assert by_cat[cat_a] == STATUS_CONVERGED, "previously-diverged category should converge"
+        assert by_cat[cat_b] == STATUS_WITHIN_TOLERANCE, (
+            "a never-diverged sibling category must NOT be mislabeled converged"
+        )
 
     def test_three_scenario_lifecycle(self) -> None:
         """clean -> diverged -> converged, the headline reproducible sequence."""
@@ -338,7 +413,7 @@ class TestReconcile:
         diverged_audit = reconcile([_sla_row(W0, 5)], [_sla_row(W0, 7)])
         assert not is_clean(diverged_audit)
         prior = diverged_keys(diverged_audit)
-        assert prior == frozenset({(W0_NAIVE, SELLER)})
+        assert prior == frozenset({(W0_NAIVE, SELLER, CATEGORY, STATE)})
 
         # 3. converged-after-watermark: stream caught up; the prior divergence resolves.
         converged_audit = reconcile(

@@ -82,6 +82,8 @@ class ReconciliationRow:
     window_start: datetime
     window_end: datetime
     seller_id: str
+    product_category: str
+    state_code: str
     streaming_value: int
     batch_value: int
     abs_delta: int
@@ -134,7 +136,15 @@ def batch_recompute_fulfillment_sla(
 
     Matching the MV exactly (sql/02_mvs.sql), which is a LEFT JOIN of the
     tumbled orders onto delivery_finals on order_id, then COUNT(*)/FILTER:
-      - order rows with fault_type == 'null_field' are excluded
+      - order rows are excluded ONLY when both is_injected_fault is true AND
+        fault_type == 'null_field', mirroring the MV's exact WHERE clause
+        ``is_injected_fault = FALSE OR fault_type IS DISTINCT FROM 'null_field'``
+        (sql/02_mvs.sql). A row with fault_type == 'null_field' but
+        is_injected_fault false is KEPT — the same row the MV keeps. The
+        generator always sets the two atomically (generator/fault_injection.py),
+        but an external producer or manual replay could land in the gap, so the
+        batch mirrors the full two-axis condition rather than the simplified
+        fault_type-only paraphrase to avoid a false divergence.
       - the join FANS OUT: an order with N matching delivered finals produces
         N rows, so orders_placed_count (the post-join COUNT(*)) counts that
         order N times. The batch replicates the fan-out — counting one
@@ -159,7 +169,16 @@ def batch_recompute_fulfillment_sla(
         batch_recompute_fulfillment_sla ClickHouse table. Empty list if no
         orders survive the null-field filter.
     """
-    eligible_orders = [order for order in orders if order.get("fault_type") != NULL_FIELD_FAULT]
+    # Mirror the MV WHERE clause exactly (sql/02_mvs.sql):
+    #   is_injected_fault = FALSE OR fault_type IS DISTINCT FROM 'null_field'
+    # i.e. exclude a row ONLY when it is an INJECTED null_field fault. A row with
+    # fault_type == 'null_field' but is_injected_fault false is kept, matching
+    # the MV. (De Morgan of the OR: NOT(is_injected_fault AND fault==null_field).)
+    eligible_orders = [
+        order
+        for order in orders
+        if not (order.get("is_injected_fault") and order.get("fault_type") == NULL_FIELD_FAULT)
+    ]
     if not eligible_orders:
         return []
 
@@ -313,8 +332,10 @@ def reconcile(
             with the WINDOW_KEY_FIELDS plus RECONCILED_METRIC.
         batch_rows: rows from batch_recompute_fulfillment_sla, same shape.
         tolerance: maximum allowed abs delta on RECONCILED_METRIC. Default 0.
-        previously_diverged_keys: window keys that diverged on a prior check.
-            A key in this set that now agrees is marked ``converged``.
+        previously_diverged_keys: full window keys
+            (window_start, seller_id, product_category, state_code) that diverged
+            on a prior check — the same shape ``diverged_keys`` emits. A key in
+            this set that now agrees is marked ``converged``.
         checked_at: timestamp stamped on every audit row. Defaults to now(UTC).
 
     Returns:
@@ -338,16 +359,25 @@ def reconcile(
 
         window_start = key[0]
         seller_id = key[1]
-        # previously_diverged_keys is keyed on (window_start, seller_id) — the
-        # same shape diverged_keys() emits — so a prior-check verdict round-trips
-        # cleanly into the next reconcile call regardless of category/state.
-        was_diverged = (window_start, seller_id) in prior
+        product_category = key[2]
+        state_code = key[3]
+        # previously_diverged_keys is keyed on the FULL window key
+        # (window_start, seller_id, product_category, state_code) — the same shape
+        # diverged_keys() emits — so a prior-check verdict round-trips into the
+        # next reconcile call without conflating two windows that share a
+        # (window_start, seller_id) but differ on category/state. Truncating to
+        # the 2-tuple here would mislabel a never-diverged category/state as
+        # `converged` whenever any OTHER category/state of the same seller+window
+        # had diverged before.
+        was_diverged = key in prior
         status = _classify(abs_delta, tolerance, was_diverged)
         audit.append(
             ReconciliationRow(
                 window_start=window_start,
                 window_end=window_start + TUMBLE_WINDOW,
                 seller_id=seller_id,
+                product_category=product_category,
+                state_code=state_code,
                 streaming_value=streaming_value,
                 batch_value=batch_value,
                 abs_delta=abs_delta,
@@ -366,9 +396,17 @@ def _classify(abs_delta: int, tolerance: int, was_diverged: bool) -> str:
 
 
 def diverged_keys(audit: list[ReconciliationRow]) -> frozenset[tuple]:
-    """Return the set of window keys currently classified as diverged."""
+    """Return the set of FULL window keys currently classified as diverged.
+
+    Emits the same 4-tuple shape reconcile keys on —
+    (window_start, seller_id, product_category, state_code) — so a prior-check
+    verdict round-trips into the next reconcile call without conflating two
+    windows that share a (window_start, seller_id) but differ on category/state.
+    """
     return frozenset(
-        (row.window_start, row.seller_id) for row in audit if row.status == STATUS_DIVERGED
+        (row.window_start, row.seller_id, row.product_category, row.state_code)
+        for row in audit
+        if row.status == STATUS_DIVERGED
     )
 
 
