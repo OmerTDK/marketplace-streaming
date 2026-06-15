@@ -2,8 +2,13 @@ name: CI
 
 on:
   pull_request:
+    # `labeled` is required so adding the `run-integration` label triggers a run
+    # (the default types — opened/synchronize/reopened — do not fire on labeling,
+    # which would make the gated integration job below unreachable via the label).
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  workflow_dispatch: {}  # manual trigger for the gated integration job
 
 jobs:
   lint-test:
@@ -18,4 +23,20 @@ jobs:
       - run: uv run ruff format --check .
       - name: sqlfluff lint (RisingWave/ansi — parse errors suppressed, see .sqlfluff)
         run: uv run sqlfluff lint sql/
-      - run: uv run pytest -v
+      - run: uv run pytest -v -m "not integration"
+
+  integration:
+    runs-on: ubuntu-latest
+    # Gated: only runs on workflow_dispatch or when the PR has the 'run-integration' label.
+    # This keeps the default CI fast (no containers, ~5s) while allowing full
+    # topology validation on demand. See docs/adr/0004-ci-strategy.md.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-integration')
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --frozen --group integration
+      - run: uv pip install -e .
+      - run: uv run pytest tests/integration/ -v --timeout=300

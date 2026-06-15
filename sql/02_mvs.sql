@@ -115,7 +115,20 @@ WHERE curr.avg_review_score < 3.5
 -- and orders with late pickups (>48 hours from order to pickup).
 -- Only non-on-time rows are materialized (WHERE alert_status <> 'on_time').
 -- =============================================================================
+-- RisingWave requires the first argument of a window table function (HOP/TUMBLE)
+-- to be a named relation — a source, CTE, or view — not an inline subquery.
+-- The order projection is therefore lifted into the order_windows CTE and HOP
+-- is applied to that name (mirrors the TUMBLE-over-CTE pattern in MV 1).
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_late_shipment_alert AS
+WITH order_windows AS (
+    SELECT
+        order_id,
+        seller_id,
+        state_code,
+        product_category,
+        event_time
+    FROM order_placed_source
+)
 SELECT
     orders.window_start,
     orders.window_end,
@@ -133,18 +146,7 @@ SELECT
             THEN 'late_pickup'
         ELSE 'on_time'
     END                                              AS alert_status
-FROM HOP(
-    (
-        SELECT
-            order_id,
-            seller_id,
-            state_code,
-            product_category,
-            event_time
-        FROM order_placed_source
-    ),
-    event_time, INTERVAL '15 minutes', INTERVAL '1 hour'
-) AS orders
+FROM HOP(order_windows, event_time, INTERVAL '15 minutes', INTERVAL '1 hour') AS orders
 LEFT JOIN shipment_created_source AS shipments
     ON orders.order_id = shipments.order_id
 WHERE CASE

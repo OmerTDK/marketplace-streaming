@@ -18,16 +18,26 @@ services:
 
   redpanda:
     image: redpandadata/redpanda:v23.3.18
+    # Dual advertised listeners. Two Kafka listeners are required so that BOTH
+    # in-network clients AND host clients connect with a usable broker address:
+    #   internal://redpanda:9092  — resolves on the compose network (RisingWave's
+    #                               CREATE SOURCE bootstrap.server uses this).
+    #   external://localhost:19092 — resolves from the host (the integration test
+    #                               producer/consumer and local `rpk` use this).
+    # A single advertised listener cannot serve both: a client always reconnects
+    # to the *advertised* host returned by metadata, so the advertised name must
+    # be reachable from where the client runs. See ADR-0002 "Dual listeners".
     command: >
       redpanda start
         --smp 1 --memory 512M --reserve-memory 0M
         --overprovisioned --node-id 0
-        --kafka-addr 0.0.0.0:9092
-        --advertise-kafka-addr redpanda:9092
+        --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+        --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
-      - "9092:9092"   # Kafka API
-      - "9644:9644"   # Admin (rpk)
-      - "8081:8081"   # Schema registry
+      - "9092:9092"     # Kafka API (internal listener — in-network only)
+      - "19092:19092"   # Kafka API (external listener — host clients)
+      - "9644:9644"     # Admin (rpk)
+      - "8081:8081"     # Schema registry
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health", "--api-urls", "localhost:9644"]
       interval: 10s
@@ -52,7 +62,9 @@ services:
 
   risingwave:
     image: risingwavelabs/risingwave:v1.8.2
-    command: standalone --config-path /risingwave.toml
+    # `single-node` is RisingWave v1.8's all-in-one command; bare `standalone`
+    # panics ("No service is specified to start") without explicit service opts.
+    command: single-node
     ports:
       - "4566:4566"   # SQL (psql-compatible: psql -h localhost -p 4566 -U root)
       - "5691:5691"   # Meta gRPC (internal)
@@ -60,21 +72,21 @@ services:
       redpanda:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "pg_isready", "-h", "localhost", "-p", "4566", "-U", "root"]
+      # The RisingWave image has no pg_isready; probe the SQL port over TCP instead.
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/4566'"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
     volumes:
       - risingwave_data:/var/lib/risingwave
-      - ./risingwave.toml:/risingwave.toml:ro
-      # SQL init files — mounted in execution order (Phase 1: uncomment)
-      # - ./sql/01_sources.sql:/docker-entrypoint-initdb.d/01_sources.sql:ro
-      # - ./sql/02_mvs.sql:/docker-entrypoint-initdb.d/02_mvs.sql:ro
     environment:
       RW_TOTAL_MEMORY_BYTES: "1073741824"   # 1 GB cap for CI safety
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.3-alpine
+    # Fully pinned to a specific patch (matches the Redpanda/RisingWave pin style).
+    # The floating 24.3-alpine tag drifts within the 24.3 LTS track; pin the patch
+    # so behaviour is reproducible across runs. Bump deliberately via PR.
+    image: clickhouse/clickhouse-server:24.3.18.7-alpine
     ports:
       - "8123:8123"   # HTTP API (used by Dagster)
       - "9000:9000"   # Native protocol
@@ -86,6 +98,10 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Re-open the `default` user beyond loopback so the Dagster service (in-network)
+      # and the integration test (host, published port) can connect. The alpine
+      # image otherwise restricts `default` to 127.0.0.1/::1. See the file header.
+      - ./clickhouse/users.d/access.xml:/etc/clickhouse-server/users.d/access.xml:ro
     ulimits:
       nofile:
         soft: 262144
