@@ -89,7 +89,7 @@ flowchart LR
 | redpanda | `redpandadata/redpanda:v23.3.18` | 9092 / 9644 | Kafka-compatible broker |
 | redpanda-init | same | — | One-shot topic creation (4 topics, 4 partitions each) |
 | risingwave | `risingwavelabs/risingwave:v1.8.2` | 4566 | Streaming SQL engine |
-| clickhouse | `clickhouse/clickhouse-server:24.3-alpine` | 8123 / 9000 | Analytical sink |
+| clickhouse | `clickhouse/clickhouse-server:24.3.18.7-alpine` | 8123 / 9000 | Analytical sink |
 | generator | `./generator` | — | Synthetic event producer with fault injection |
 | dagster | `./dagster` | 3000 | Sync sensors and batch reconciliation |
 

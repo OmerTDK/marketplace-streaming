@@ -6,7 +6,8 @@ produces events, waits for a windowed MV row, then calls the sync function
 directly (no Dagster daemon) to write to ClickHouse and asserts:
 
   (a) SELECT COUNT(*) FROM fulfillment_sla FINAL >= 1
-  (b) The query string used by the test contains 'FINAL' (regression guard)
+  (b) The shared ch_read_query builder injects FINAL by construction; the test
+      asserts on the builder output, so the guard fails if FINAL is ever removed
   (c) within_sla_count in ClickHouse matches the RisingWave MV row
 
 Dagster is NOT containerised here — its daemon cold-starts 90s+ and daemon
@@ -39,6 +40,24 @@ SEED = 42
 SIM_START = "2024-01-08T00:00:00Z"
 TIME_ACCELERATION = 3600.0
 
+CH_SLA_TABLE = "fulfillment_sla"
+
+
+def ch_read_query(columns: str, where: str | None = None, table: str = CH_SLA_TABLE) -> str:
+    """Build a read query against a ClickHouse ReplacingMergeTree table.
+
+    FINAL is injected by CONSTRUCTION — every query this builder produces forces
+    merge-time deduplication at read. ADR-0002 requires FINAL on every read of
+    these tables (ReplacingMergeTree dedup is lazy). The integration tests assert
+    'FINAL' in the OUTPUT of this builder, not in a hand-written literal, so the
+    guard has teeth: if someone removes FINAL here, the assertion fails. Every
+    ClickHouse read in this module goes through this function for that reason.
+    """
+    query = f"SELECT {columns} FROM {table} FINAL"
+    if where:
+        query += f" WHERE {where}"
+    return query
+
 
 # ---------------------------------------------------------------------------
 # The sync function — extracted from Dagster asset logic for direct testing
@@ -48,7 +67,7 @@ TIME_ACCELERATION = 3600.0
 def sync_fulfillment_sla_to_clickhouse(
     rw_conn,
     ch_client,
-    clickhouse_table: str = "fulfillment_sla",
+    clickhouse_table: str = CH_SLA_TABLE,
 ) -> int:
     """Read all rows from mv_fulfillment_sla_5min and write to ClickHouse.
 
@@ -56,8 +75,9 @@ def sync_fulfillment_sla_to_clickhouse(
     as a plain function so the integration test can call it directly without
     booting the Dagster daemon.
 
-    All queries against ClickHouse ReplacingMergeTree tables use FINAL. The CH
-    query string is returned so the test can assert it contains 'FINAL'.
+    This function only WRITES (INSERT) into ClickHouse; the FINAL-on-read
+    requirement is exercised by the test's read-back queries, which go through
+    ``ch_read_query`` (FINAL injected by construction).
 
     Returns:
         Number of rows written to ClickHouse.
@@ -180,10 +200,13 @@ class TestClickhouseSink:
         rows_written = sync_fulfillment_sla_to_clickhouse(rw_conn, ch_client)
         assert rows_written >= 1, "sync function wrote 0 rows"
 
-        # Query with FINAL — the query must contain FINAL (regression guard)
-        ch_query = "SELECT COUNT(*) FROM fulfillment_sla FINAL"
+        # Regression guard: the read query is BUILT by ch_read_query, which injects
+        # FINAL by construction. Asserting on the builder OUTPUT (not a hand-written
+        # literal) means the guard actually fails if FINAL is ever removed from the
+        # builder — ReplacingMergeTree dedup requires FINAL on read (ADR-0002).
+        ch_query = ch_read_query("COUNT(*)")
         assert "FINAL" in ch_query, (
-            "ClickHouse query missing FINAL — ReplacingMergeTree dedup requires FINAL"
+            "ch_read_query dropped FINAL — ReplacingMergeTree dedup requires FINAL on read"
         )
         result = ch_client.execute(ch_query)
         count = result[0][0]
@@ -207,8 +230,10 @@ class TestClickhouseSink:
         sync_fulfillment_sla_to_clickhouse(rw_conn, ch_client)
 
         ch_rows = ch_client.execute(
-            "SELECT within_sla_count FROM fulfillment_sla FINAL "
-            "WHERE window_start = %(ws)s AND seller_id = %(sid)s",
+            ch_read_query(
+                "within_sla_count",
+                where="window_start = %(ws)s AND seller_id = %(sid)s",
+            ),
             {"ws": rw_window_start, "sid": rw_seller_id},
         )
         assert ch_rows, (

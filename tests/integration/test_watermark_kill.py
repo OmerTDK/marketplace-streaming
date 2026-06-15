@@ -47,7 +47,10 @@ from tests.integration.conftest import (
     risingwave_endpoint,
 )
 
-# T0: the business event time for the kill-test delivery scan.
+# T0: the scanned_at (carrier scan time) for the kill-test delivery event.
+# This is the timestamp the delivery_update watermark and mv_delivery_zone_status
+# window are both keyed on. event_time is set 30 min behind scanned_at in
+# _make_delivery_update (the two are never equal — see that function).
 T0 = datetime(2024, 1, 8, 10, 0, 0, tzinfo=UTC)
 
 
@@ -64,12 +67,20 @@ def _make_delivery_update(
     status: str = "delivered",
     seq: int = 1,
 ) -> dict:
+    # event_time is deliberately OFFSET from scanned_at (30 min earlier) so the
+    # two timestamps are never equal. scanned_at is the carrier scan time that
+    # drives the delivery_update watermark (ADR-0002); event_time is the upstream
+    # business event time. If the watermark were ever switched from
+    # `WATERMARK FOR scanned_at` to `WATERMARK FOR event_time`, the advance
+    # events would carry an event_time 30 min behind their scanned_at, the
+    # watermark would lag further, and the sentinel window would NOT close —
+    # making this kill-test fail. That is the regression property we want.
     return {
         "event_id": str(uuid.uuid4()),
         "event_type": "delivery_update",
         "event_version": "1.0",
         "produced_at": _fmt(produced_at),
-        "event_time": _fmt(scanned_at),
+        "event_time": _fmt(scanned_at - timedelta(minutes=30)),
         "scanned_at": _fmt(scanned_at),
         "is_injected_fault": False,
         "fault_type": None,

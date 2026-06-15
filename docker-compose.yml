@@ -83,7 +83,10 @@ services:
       RW_TOTAL_MEMORY_BYTES: "1073741824"   # 1 GB cap for CI safety
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.3-alpine
+    # Fully pinned to a specific patch (matches the Redpanda/RisingWave pin style).
+    # The floating 24.3-alpine tag drifts within the 24.3 LTS track; pin the patch
+    # so behaviour is reproducible across runs. Bump deliberately via PR.
+    image: clickhouse/clickhouse-server:24.3.18.7-alpine
     ports:
       - "8123:8123"   # HTTP API (used by Dagster)
       - "9000:9000"   # Native protocol

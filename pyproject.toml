@@ -48,3 +48,10 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (require Docker; excluded from fast CI lane)",
 ]
+# NOTE: the integration suite MUST run sequentially. Each test module brings up
+# the docker-compose topology under its own COMPOSE_PROJECT_NAME but publishes
+# the SAME fixed host ports (4566 / 19092 / 9000). Module-scoped fixtures tear
+# each topology down before the next starts, so the ports never clash UNDER
+# SEQUENTIAL EXECUTION. Do NOT add pytest-xdist (`-n auto`) or any parallel
+# runner for `tests/integration/` — concurrent modules would collide on those
+# fixed ports. See docs/adr/0004-ci-strategy.md § "Module isolation and fixed ports".

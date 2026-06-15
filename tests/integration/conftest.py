@@ -18,6 +18,13 @@ kill-test never share a RisingWave instance. Modules run sequentially and the
 module-scoped fixture tears each topology down before the next starts, so the
 fixed published host ports (4566 / 19092 / 9000) never clash.
 
+IMPORTANT — this suite must run SEQUENTIALLY. The distinct COMPOSE_PROJECT_NAMEs
+isolate container/volume names, but every module publishes the SAME fixed host
+ports. Running modules concurrently (pytest-xdist `-n auto` or any parallel
+runner) would collide on those ports. The pinned pytest invocation in
+.github/workflows/ci.yml has no parallelism flag; keep it that way, or switch to
+ephemeral host ports first. See pyproject.toml [tool.pytest.ini_options].
+
 The poll_until helper enforces the polling-not-sleeping discipline.
 """
 
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -43,7 +51,7 @@ BEYOND_TOLERANCE_ZONE = "BEYOND_TOLERANCE_ZONE"
 # Image pins — single source of truth from docker-compose.yml.
 REDPANDA_IMAGE = "redpandadata/redpanda:v23.3.18"
 RISINGWAVE_IMAGE = "risingwavelabs/risingwave:v1.8.2"
-CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:24.3-alpine"
+CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:24.3.18.7-alpine"
 
 # Topics matching the four event sources.
 KAFKA_TOPICS = ["order_placed", "shipment_created", "delivery_update", "seller_activity"]
@@ -135,12 +143,22 @@ def _split_statements(sql: str) -> list[str]:
     """Split SQL file content into individual executable statements.
 
     Comments are stripped FIRST, then the text is split on ';'. Order matters:
-    a '--' comment line may itself contain a ';' (e.g. "...there; watermark..."),
-    so splitting before stripping would tear a comment into a bogus statement.
+    a '--' comment may itself contain a ';' (e.g. "...there; watermark..."), so
+    splitting before stripping would tear a comment into a bogus statement.
+
+    Both comment forms are stripped: full-line '--' comments AND inline trailing
+    '--' comments (everything from ' --' to end-of-line). The SQL files in this
+    repo never put '--' inside a string literal, so a literal-unaware strip is
+    safe here; if that ever changes, switch to a real SQL parser (sqlparse).
     """
-    # 1. Drop full-line '--' comments (the only comment style used in these files).
-    no_comments = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
-    # 2. Split into statements on the terminator.
+    cleaned_lines = []
+    for line in sql.splitlines():
+        if line.strip().startswith("--"):
+            continue  # full-line comment — drop entirely
+        # Strip an inline trailing '--' comment (preceded by whitespace or at col 0).
+        cleaned_lines.append(re.sub(r"(?:^|\s)--.*$", "", line))
+    no_comments = "\n".join(cleaned_lines)
+    # Split into statements on the terminator.
     statements = []
     for raw in no_comments.split(";"):
         clean = raw.strip()
