@@ -2,9 +2,12 @@
 
 Real-time marketplace analytics: Redpanda → RisingWave streaming SQL → ClickHouse, with Dagster batch reconciliation and fault injection demo.
 
-> Status: Phase 2 — real topology runs; the integration suite boots the
-> docker-compose stack (Redpanda + RisingWave + ClickHouse) and verifies the
-> end-to-end streaming path, including the watermark kill-test.
+> Status: Phase 3 — the Dagster batch-vs-stream reconciliation is live. An
+> independent pandas recompute of the fulfillment-SLA metric is diffed against
+> the streaming MV, and a Dagster asset-check fails loudly on divergence. The
+> integration suite boots the docker-compose stack (Redpanda + RisingWave +
+> ClickHouse) and verifies the streaming path, the watermark kill-test, and the
+> reconciliation kill-verify (check passes clean, fails on injected divergence).
 
 ---
 
@@ -104,11 +107,11 @@ See `docker-compose.low-mem.yml` for constrained environments (~1.5 GB).
 |-------|-------------|--------|
 | **0 — Architecture** | ADRs, docker-compose skeleton, SQL DDL reviewed, event schema documented | Merged |
 | **1 — Generator** | Deterministic event generator, injectable sink, fault injection harness, sqlfluff wired | Merged |
-| **2 — Infrastructure** | Working compose topology, all services healthy, broker + streaming + sink + watermark integration tests on the compose substrate | Current |
-| **3 — Streaming SQL** | RisingWave sources and MVs live, queryable via psql | Covered by Phase 2 integration suite |
-| **4 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified | Sync logic verified (Phase 2); Dagster daemon deferred |
-| **5 — Reconciliation** | Batch recompute asset + reconciliation sensor, divergence/convergence demo | Planned |
-| **6 — Demo + polish** | `make fault-demo` script, kill-verification integration test, README with real numbers | Planned |
+| **2 — Infrastructure** | Working compose topology, all services healthy, broker + streaming + sink + watermark integration tests on the compose substrate | Merged |
+| **3 — Reconciliation** | Dagster `clickhouse_sync` + `batch_recompute` assets, `reconciliation_audit` asset, asset-check that fails on divergence; clean/diverged/converged scenarios; in-process Dagster test | Current |
+| **4 — Streaming SQL** | RisingWave sources and MVs live, queryable via psql | Covered by Phase 2 integration suite |
+| **5 — ClickHouse sink** | Dagster sync assets writing to ClickHouse, FINAL queries verified | Verified (Phase 2 sync + Phase 3 asset) |
+| **6 — Demo + polish** | `make fault-demo` script, kill-verification integration test, README with real numbers | In progress |
 
 ---
 
@@ -200,18 +203,67 @@ make fault-demo
 | [ADR-0001](docs/adr/0001-streaming-engine.md) | RisingWave v1.8.x over Flink — with the upgrade path documented |
 | [ADR-0002](docs/adr/0002-architecture.md) | Full topology: docker-compose, event domain model, generator, fault injection, watermark decision |
 | [ADR-0003](docs/adr/0003-generator-design.md) | Generator determinism (RNG-derived UUIDs), injectable sink (testability vs runtime fidelity), event-time fault parameterization |
+| [ADR-0004](docs/adr/0004-ci-strategy.md) | Two-lane CI: fast container-free default + gated integration; compose substrate; module isolation on fixed ports |
+| [ADR-0005](docs/adr/0005-reconciliation.md) | Batch-vs-stream reconciliation: independent pandas recompute, LEFT JOIN fan-out parity, naive-UTC keys, asset-check kill-switch, in-process Dagster testing |
 
 ---
 
+## Reconciliation (Phase 3)
+
+The batch-vs-stream reconciliation is the headline differentiator. Three Dagster
+assets plus one asset-check (`reconciliation/assets.py`):
+
+- **`clickhouse_sync_asset`** — reads `mv_fulfillment_sla_5min` windows from
+  RisingWave and writes the `fulfillment_sla` ReplacingMergeTree sink (idempotent).
+- **`batch_recompute_asset`** — recomputes the same SLA metric from the **raw**
+  order/delivery events (the RisingWave source) via pandas, writing
+  `batch_recompute_fulfillment_sla`. An independent second compute path.
+- **`reconciliation_audit_asset`** — diffs streaming vs batch per window and
+  appends the verdict (`within_tolerance` / `diverged` / `converged`) to
+  `reconciliation_audit`.
+- **`reconciliation_check`** (asset-check) — re-runs the diff and **fails**
+  (`passed=False`, `ERROR` severity) when any window diverges beyond tolerance.
+
+All reconciliation logic lives in pure functions (`reconciliation/logic.py`),
+fast-lane unit-tested with no containers. The batch path mirrors the MV's
+`LEFT JOIN` fan-out exactly — an order with two delivered-final delivery events
+is counted twice, matching the stream (a real `SEED=42` case the integration run
+surfaced; documented in [ADR-0005](docs/adr/0005-reconciliation.md)).
+
+The three reproducible scenarios (`SEED=42`): **clean** (streaming == batch, check
+passes), **diverged** (injected mismatch, check fails — kill-verified both ways),
+**converged** (a previously-diverged window now agrees).
+
+Run the full reconciliation flow in Dagster:
+
+```bash
+docker compose up --build        # includes the dagster service on :3000
+open http://localhost:3000       # materialize the assets, see the check verdict
+```
+
 ## Results
 
-**Fast lane (no containers):** 77 tests, 0 failures, ~1.7s on Python 3.14.
-ruff + sqlfluff + pytest all pass from `make ci`.
+**Fast lane (no containers):** 101 tests, 0 failures, ~2.3s. ruff + sqlfluff +
+pytest all pass from `make ci`. The reconciliation logic (recompute math + diff)
+adds 24 of those tests; the Dagster integration module is skipped here
+(`pytest.importorskip("dagster")`) so the fast lane stays dagster- and
+container-free.
 
-**Phase 2 integration (Docker):** 9 tests, 0 failures, ~145s end-to-end via
-`make integration`. The suite uses the repo's own `docker-compose.yml` as the
-test substrate (testcontainers `DockerCompose`), so it exercises the exact
-topology and SQL artifacts a user runs:
+**Integration (Docker):** 14 tests, 0 failures, ~175s end-to-end via
+`make integration` (Phase 2's 9 + Phase 3's 5 reconciliation tests). The suite
+uses the repo's own `docker-compose.yml` as the test substrate (testcontainers
+`DockerCompose`), so it exercises the exact topology and SQL artifacts a user runs:
+
+**Reconciliation (Phase 3 additions):**
+- **Sync** — `mv_fulfillment_sla_5min` rows land in the `fulfillment_sla` sink.
+- **Clean-run parity** — the pandas batch recompute matches the streaming MV's
+  `within_sla_count` on every emitted window (140 windows at `N_EVENTS=300`).
+- **In-process Dagster** — all 3 assets materialize via `dagster.materialize`
+  against the live RisingWave + ClickHouse — no daemon (ADR-0005).
+- **Kill-verify** — the `reconciliation_check` passes on a clean run and fails on
+  an injected divergence; verified by direct invocation AND via `materialize`.
+
+**Phase 2 streaming path:**
 
 - **Broker byte-parity** — `KafkaSink` → Redpanda → consumer round-trip matches
   the `InMemorySink` reference event-for-event (SEED=42).

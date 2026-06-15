@@ -127,20 +127,25 @@ services:
     restart: on-failure
 
   dagster:
-    build: ./dagster
+    # Built from the repo ROOT so the generator + reconciliation packages and the
+    # integration dependency group (dagster, dagster-webserver, psycopg2,
+    # clickhouse-driver) are installed. See dagster/Dockerfile.
+    build:
+      context: .
+      dockerfile: dagster/Dockerfile
     ports:
-      - "3000:3000"   # Dagster UI
+      - "3000:3000"   # Dagster UI + daemon (dagster dev)
     depends_on:
       risingwave:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
     environment:
-      RISINGWAVE_DSN: postgresql://root@risingwave:4566/dev
+      RISINGWAVE_HOST: risingwave
+      RISINGWAVE_PORT: "4566"
       CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-    volumes:
-      - ./dagster:/opt/dagster/app
+      # clickhouse_driver speaks the NATIVE protocol (9000), not HTTP (8123).
+      CLICKHOUSE_PORT: "9000"
     restart: on-failure
 
 volumes:
