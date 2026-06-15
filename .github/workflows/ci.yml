@@ -2,8 +2,13 @@ name: CI
 
 on:
   pull_request:
+    # `labeled` is required so adding the `run-integration` label triggers a run
+    # (the default types — opened/synchronize/reopened — do not fire on labeling,
+    # which would make the gated integration job below unreachable via the label).
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  workflow_dispatch: {}  # manual trigger for the gated integration job
 
 jobs:
   lint-test:

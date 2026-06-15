@@ -46,13 +46,17 @@ DROP_STATEMENTS = [
 
 
 def _split_statements(sql: str) -> list[str]:
-    """Split SQL into individual statements, stripping comments and blanks."""
+    """Split SQL into individual statements, stripping comments and blanks.
+
+    Comments are stripped FIRST, then the text is split on ';' — a '--' comment
+    line may itself contain a ';' (e.g. a header noting a watermark interval), so
+    splitting before stripping would tear that comment into a bogus statement.
+    Mirrors tests/integration/conftest.py::_split_statements.
+    """
+    no_comments = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
     statements = []
-    for raw in sql.split(";"):
-        stripped = raw.strip()
-        # Strip line comments
-        lines = [line for line in stripped.splitlines() if not line.strip().startswith("--")]
-        clean = "\n".join(lines).strip()
+    for raw in no_comments.split(";"):
+        clean = raw.strip()
         if clean:
             statements.append(clean)
     return statements
