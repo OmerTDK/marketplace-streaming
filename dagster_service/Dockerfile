@@ -21,7 +21,7 @@ RUN uv sync --frozen --group integration
 
 COPY generator ./generator
 COPY reconciliation ./reconciliation
-COPY dagster/workspace.yaml ./workspace.yaml
+COPY dagster_service/workspace.yaml ./workspace.yaml
 
 # Install the local generator + reconciliation packages into the venv so
 # `dagster dev` can import reconciliation.assets regardless of working directory.

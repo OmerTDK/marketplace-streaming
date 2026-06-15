@@ -129,10 +129,13 @@ services:
   dagster:
     # Built from the repo ROOT so the generator + reconciliation packages and the
     # integration dependency group (dagster, dagster-webserver, psycopg2,
-    # clickhouse-driver) are installed. See dagster/Dockerfile.
+    # clickhouse-driver) are installed. See dagster_service/Dockerfile.
+    # NOTE: the build context dir is dagster_service/, NOT dagster/ — a top-level
+    # `dagster/` dir would shadow the installed `dagster` PyPI package on sys.path
+    # and break `import dagster` (namespace-package collision).
     build:
       context: .
-      dockerfile: dagster/Dockerfile
+      dockerfile: dagster_service/Dockerfile
     ports:
       - "3000:3000"   # Dagster UI + daemon (dagster dev)
     depends_on:
