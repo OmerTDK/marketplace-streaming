@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     # No containers required: generator uses InMemorySink, sqlfluff runs offline.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --frozen
       - run: uv pip install -e .
@@ -35,7 +35,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'run-integration')
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --frozen --group integration
       - run: uv pip install -e .
