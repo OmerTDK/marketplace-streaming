@@ -34,10 +34,13 @@ import contextlib
 import os
 import re
 import time
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SQL_DIR = REPO_ROOT / "sql"

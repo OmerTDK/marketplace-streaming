@@ -10,12 +10,19 @@ on:
     branches: [main]
   workflow_dispatch: {}  # manual trigger for the gated integration job
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-test:
     runs-on: ubuntu-latest
     # No containers required: generator uses InMemorySink, sqlfluff runs offline.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --frozen
       - run: uv pip install -e .
@@ -35,8 +42,28 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'run-integration')
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --frozen --group integration
       - run: uv pip install -e .
       - run: uv run pytest tests/integration/ -v --timeout=300
+
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --frozen
+      - name: bandit (Python SAST)
+        run: uv run bandit -r generator reconciliation -c pyproject.toml
+      - name: pip-audit (dependency CVEs)
+        run: uv run pip-audit
+      - name: gitleaks (secret scan)
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

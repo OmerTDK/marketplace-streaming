@@ -360,7 +360,7 @@ class MarketplaceGenerator:
         category = self._pick_category()
         state_code = self._pick_state()
 
-        event_time_dt = datetime.fromisoformat(event["event_time"].replace("Z", "+00:00"))
+        event_time_dt = datetime.fromisoformat(event["event_time"])
         sla_hours = CATEGORY_SLA_HOURS[category]
         sla_deadline = event_time_dt + timedelta(hours=sla_hours)
 
@@ -397,7 +397,7 @@ class MarketplaceGenerator:
         event = self._make_envelope("shipment_created")
         shipment_id = self._make_uuid()
 
-        event_time_dt = datetime.fromisoformat(event["event_time"].replace("Z", "+00:00"))
+        event_time_dt = datetime.fromisoformat(event["event_time"])
         days_to_pickup = int(self._rng.integers(0, 3))
         pickup_dt = event_time_dt + timedelta(days=days_to_pickup)
         delivery_days = self._lognormal_delivery_days()
@@ -446,7 +446,7 @@ class MarketplaceGenerator:
         is_final = status in FINAL_STATUSES
         seq = int(self._rng.integers(1, 10))
 
-        event_time_dt = datetime.fromisoformat(event["event_time"].replace("Z", "+00:00"))
+        event_time_dt = datetime.fromisoformat(event["event_time"])
         # scanned_at = event_time + small random scan delay in sim-time
         scan_offset = float(self._rng.uniform(0, 300))  # 0-300 sim-seconds
         scanned_at = event_time_dt + timedelta(seconds=scan_offset)

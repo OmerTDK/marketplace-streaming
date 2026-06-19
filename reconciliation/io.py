@@ -12,9 +12,12 @@ the integration test and against a Dagster resource at runtime.
 
 from __future__ import annotations
 
-from datetime import datetime
+from typing import TYPE_CHECKING
 
-from reconciliation.logic import ReconciliationRow
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from reconciliation.logic import ReconciliationRow
 
 # Streaming sink table (the clickhouse_sync_asset target) and its column order.
 STREAMING_SLA_TABLE = "fulfillment_sla"

@@ -220,7 +220,7 @@ class TestEnvelopeSchema:
             for event in events:
                 ts = event["produced_at"]
                 # Must parse as ISO 8601 UTC
-                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(ts)
                 assert dt.tzinfo is not None, f"produced_at not UTC in {topic}"
 
 
@@ -292,8 +292,8 @@ class TestOrderPlacedSchema:
         gen, sink = make_generator()
         gen.generate_batch(N_MEDIUM)
         for event in sink.records_for("order_placed"):
-            event_dt = datetime.fromisoformat(event["event_time"].replace("Z", "+00:00"))
-            sla_dt = datetime.fromisoformat(event["sla_deadline_at"].replace("Z", "+00:00"))
+            event_dt = datetime.fromisoformat(event["event_time"])
+            sla_dt = datetime.fromisoformat(event["sla_deadline_at"])
             category = event["product_category"]
             expected_hours = CATEGORY_SLA_HOURS[category]
             assert sla_dt == event_dt + timedelta(hours=expected_hours), (
@@ -347,8 +347,8 @@ class TestShipmentCreatedSchema:
         gen, sink = make_generator()
         gen.generate_batch(N_MEDIUM)
         for event in sink.records_for("shipment_created"):
-            pickup_dt = datetime.fromisoformat(event["actual_pickup_at"].replace("Z", "+00:00"))
-            est_dt = datetime.fromisoformat(event["estimated_delivery_at"].replace("Z", "+00:00"))
+            pickup_dt = datetime.fromisoformat(event["actual_pickup_at"])
+            est_dt = datetime.fromisoformat(event["estimated_delivery_at"])
             assert est_dt > pickup_dt, (
                 f"estimated_delivery_at ({est_dt}) must be after actual_pickup_at ({pickup_dt})"
             )
@@ -414,7 +414,7 @@ class TestDeliveryUpdateSchema:
         gen.generate_batch(N_MEDIUM)
         for event in sink.records_for("delivery_update"):
             ts = event["scanned_at"]
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(ts)
             assert dt.tzinfo is not None
 
 
@@ -709,7 +709,7 @@ class TestFaultInjection:
         base_event_time = FIXED_EVENT_TS
         for event in sink.records_for("order_placed"):
             if event.get("fault_type") == FAULT_LATE_ARRIVAL:
-                event_dt = datetime.fromisoformat(event["event_time"].replace("Z", "+00:00"))
+                event_dt = datetime.fromisoformat(event["event_time"])
                 assert event_dt < base_event_time, (
                     f"late_arrival event_time {event_dt} not before base {base_event_time}"
                 )

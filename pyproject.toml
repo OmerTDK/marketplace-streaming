@@ -22,6 +22,8 @@ dev = [
     "ruff>=0.8",
     "pre-commit>=4.0",
     "sqlfluff>=3.0",
+    "bandit>=1.9.4",
+    "pip-audit>=2.10.1",
 ]
 integration = [
     # testcontainers[kafka] provides RedpandaContainer; [clickhouse] provides ClickHouseContainer
@@ -44,10 +46,10 @@ integration = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "SIM", "ARG", "PTH", "RUF"]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "ARG", "PTH", "RUF", "C4", "FURB", "RET", "TC", "FA"]
 ignore = [
     # ARG001: Unused function argument — acceptable in abstract base class stubs
     "ARG001",
@@ -55,6 +57,9 @@ ignore = [
     # even when not referenced directly (fixture injection pattern)
     "ARG002",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
