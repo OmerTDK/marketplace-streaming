@@ -25,7 +25,7 @@ Real-time marketplace analytics: Redpanda → RisingWave streaming SQL → Click
   services on a laptop. `make demo` scripts the full fault-injection scenario.
   `SEED=42` makes the event stream deterministic across machines.
 
-- **Two-lane CI.** Fast lane (103 tests, ~1.4s, no containers) covers all generator
+- **Two-lane CI.** Fast lane (116 tests, ~1.4s, no containers) covers all generator
   and reconciliation logic. Integration lane (14 tests, ~175s) boots the full
   docker-compose topology and verifies the streaming path end-to-end. The two lanes
   never interfere.
@@ -153,7 +153,7 @@ python scripts/demo.py --dry-run
 ```bash
 uv sync
 uv pip install -e .
-make ci         # ruff + sqlfluff + pytest, 112 tests, ~1.4s
+make ci         # ruff + sqlfluff + pytest, 116 tests, ~1.4s
 ```
 
 ---
@@ -169,7 +169,7 @@ make ci         # ruff + sqlfluff + pytest, 112 tests, ~1.4s
 | ClickHouse sync latency | ~30s | Dagster sensor poll interval |
 | MV correctness | 0 diverged windows | Across 140 windows at `N_EVENTS=300`, `SEED=42` |
 | Fault recovery | ~30s wall-clock | Watermark advances past late events at 3600x acceleration |
-| Fast CI | 112 tests, 0 failures | ~1.4s, no containers |
+| Fast CI | 116 tests, 0 failures | ~1.4s, no containers |
 | Integration CI | 14 tests, 0 failures | ~175s, full docker-compose topology |
 
 ### Reconciliation scenarios (SEED=42, reproducible)

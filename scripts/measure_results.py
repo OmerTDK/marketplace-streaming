@@ -42,7 +42,7 @@ DRY_RUN_RESULTS = {
         "30 real-seconds ≈ 30 simulated hours at TIME_ACCELERATION_FACTOR=3600; "
         "the 6-hour fault-mode watermark advances past late events within that window"
     ),
-    "fast_ci_tests": 112,
+    "fast_ci_tests": 116,
     "fast_ci_duration_s": 1.4,
     "integration_tests": 14,
     "integration_duration_s": 175,
