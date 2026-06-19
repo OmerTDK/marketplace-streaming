@@ -12,9 +12,11 @@ time). Tests inject a fixed callable so produced_at is also deterministic.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def utc_now() -> datetime:
@@ -45,7 +47,7 @@ class SimClock:
         real_start: float | None = None,
     ) -> None:
         if isinstance(sim_start, str):
-            sim_start = datetime.fromisoformat(sim_start.replace("Z", "+00:00"))
+            sim_start = datetime.fromisoformat(sim_start)
         self._sim_start: datetime = sim_start
         self._acceleration_factor = acceleration_factor
         self._wall_clock: Callable[[], datetime] = wall_clock or utc_now
@@ -136,7 +138,7 @@ def _format_iso(dt: datetime) -> str:
 
 def _parse_iso(s: str) -> datetime:
     """Parse ISO 8601 string to UTC datetime."""
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return datetime.fromisoformat(s)
 
 
 # Type alias used in generator.py to accept either clock implementation.

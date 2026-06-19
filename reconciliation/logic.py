@@ -118,7 +118,7 @@ def _parse_ts(value: object) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
     if isinstance(value, str):
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     raise TypeError(f"Cannot parse timestamp from {type(value).__name__}: {value!r}")
 
