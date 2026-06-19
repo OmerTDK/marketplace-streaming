@@ -58,8 +58,12 @@ ignore = [
     "ARG002",
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["generator", "reconciliation", "tests"]
+
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
+skips = ["B608"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
