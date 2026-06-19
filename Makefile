@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint lint-sql test ci integration test-reconciliation docker-build docker-test up down fault-demo fault-off
+.PHONY: help install lint lint-sql test ci integration test-reconciliation docker-build docker-test up down demo fault-demo fault-off
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "%-16s %s\n", $$1, $$2}'
@@ -35,6 +35,9 @@ docker-build: ## Build the project image
 
 docker-test: ## Run the test suite inside the image
 	docker run --rm marketplace-streaming
+
+demo: ## Run the E2E fault-injection demo (requires docker stack running — see README Quickstart)
+	uv run python scripts/demo.py
 
 up: ## Start the full stack (Phase 1+)
 	docker compose up --build

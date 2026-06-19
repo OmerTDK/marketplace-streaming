@@ -39,7 +39,6 @@ from dagster import (
     asset,
     asset_check,
 )
-
 from reconciliation.io import (
     read_deliveries_from_risingwave,
     read_orders_from_risingwave,
