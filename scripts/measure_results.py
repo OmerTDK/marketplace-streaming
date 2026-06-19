@@ -56,9 +56,10 @@ DRY_RUN_RESULTS = {
 
 def _ch_query(host: str, ch_port: int, sql: str) -> str:
     import urllib.error
+    import urllib.parse
     import urllib.request
 
-    url = f"http://{host}:{ch_port}/?query={urllib.request.quote(sql)}&default_format=TabSeparated"
+    url = f"http://{host}:{ch_port}/?query={urllib.parse.quote(sql)}&default_format=TabSeparated"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             return resp.read().decode()
