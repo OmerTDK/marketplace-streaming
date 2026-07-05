@@ -23,7 +23,7 @@ jobs:
     # No containers required: generator uses InMemorySink, sqlfluff runs offline.
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v8.3.0
       - run: uv sync --frozen
       - run: uv pip install -e .
       - run: uv run ruff check .
@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v8.3.0
       - run: uv sync --frozen --group integration
       - run: uv pip install -e .
       - run: uv run pytest tests/integration/ -v --timeout=300
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v8.3.0
       - run: uv sync --frozen
       - name: bandit (Python SAST)
         run: uv run bandit -r generator reconciliation -c pyproject.toml
