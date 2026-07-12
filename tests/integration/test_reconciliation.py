@@ -32,6 +32,7 @@ from dagster import (
     AssetCheckSeverity,
     materialize,
 )
+
 from generator.clock import SimClock
 from generator.generator import MarketplaceGenerator
 from generator.sink import KafkaSink
